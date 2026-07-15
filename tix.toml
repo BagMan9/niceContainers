@@ -1,0 +1,21 @@
+# tix.toml — niceContainers standalone library.
+#
+# Dead simple by design: one context, one hand-maintained stub, no
+# [stubs.generate] (so no `nix build` and no darwin patchelf issue), no giant
+# nixos option tree. Lib/Pkgs are compiled into tix.
+#
+# Why a stub is still needed even standalone: tix does static, local inference
+# and does NOT evaluate the NixOS module system, so `cfg` (= config.niceContainers)
+# and `config` have no source it can follow. tix-stubs/nice-containers.tix hands
+# those types over by parameter name. The pure functions in lib.nix need nothing
+# — tix infers them natively.
+
+[context.nice-containers]
+includes = ["*.nix"]
+excludes = ["flake.nix"]
+stubs = ["./tix-stubs/nice-containers.tix"]
+
+# Background inference so cross-file `import ./model.nix` types flow.
+[project]
+includes = ["*.nix"]
+excludes = ["flake.nix"]

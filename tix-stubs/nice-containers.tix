@@ -1,0 +1,83 @@
+# niceContainers types — HAND-MAINTAINED.
+#
+# tix does static inference and does not evaluate the NixOS module system, so
+# `cfg` (config.niceContainers) and `config` have no source it can trace. This
+# file hands those types to the files that take them as parameters. When you
+# add/remove an option in default.nix, edit the matching field here.
+#
+# The generator (`tix stubs generate module`) renders string/int option leaves
+# (singleLineStr, ints.between, strMatching, anything) as opaque `{ ... }`, which
+# produces false "expected string" errors — that is why this is hand-written.
+# To re-bootstrap the SHAPE after big option changes, see tix-stubs/regen.sh.
+
+type NiceContainersMount = { path: string, group: string, ro: bool };
+
+type NiceContainersContainer = {
+  enable: bool,
+  groups: [string],
+  egress: string,
+  forwardPorts: [string],
+  hostBinds: [string],
+  matchSystemd: string,
+  extraServiceConfig: { ... },
+  mounts: [NiceContainersMount],
+};
+
+type NiceContainersEgress = { wanInterface: string, vid: int, tableId: int };
+type NiceContainersGroup = { isolated: bool, cidrMask: int, vid: int };
+
+type NiceContainersConfig = {
+  enable: bool,
+  hostWan: string,
+  forwardInterfaces: [string],
+  api: { containers: { ... }, ... },
+  interfaceConfig: {
+    baseSubnet: string,
+    bridgeName: string,
+    isolatedTrunk: string,
+    freeTrunk: string,
+    fixTailscale: bool,
+  },
+  groupConfig: { _: NiceContainersGroup },
+  egress: { _: NiceContainersEgress },
+  containers: { _: NiceContainersContainer },
+};
+
+# The return value of model.nix. Values are intentionally LOOSE (`{ ... }` /
+# `[{ ... }]`): the point is to name every field so `inherit (model) ...` in the
+# consumers resolves instead of collapsing to an unconstrained variable.
+type NiceContainersModel = {
+  names: {
+    isoBridgeTrunk: string -> string,
+    freeBridgeTrunk: string -> string,
+    containerSub: { ... } -> string,
+    svi: string -> string,
+    vrf: string -> string,
+    vrfToRoutingTable: string -> string,
+    vrfRoutingTable: string -> string,
+  },
+  vrfTables: { _: int },
+  parseGroupRef: string -> { isMaster: bool, name: string, ... },
+  enabledContainers: { _: NiceContainersContainer },
+  vlans: [{ ... }],
+  sviList: [{ ... }],
+  sviDict: { _: { ... } },
+  grpDict: { _: { ... } },
+  evalContainers: { _: { ... } },
+  groupAddrMap: string -> { _: { ... } },
+};
+
+# What the NixOS module (default.nix) sees as `config` — only niceContainers is
+# read there, so an open record with that one field is enough.
+type NiceContainersOwner = { niceContainers: NiceContainersConfig, ... };
+
+# Parameters typed by name.
+#   default.nix                          -> config, lib, pkgs
+#   model.nix / lib.nix                  -> cfg, lib
+#   networkd.nix                         -> cfg, lib, model
+#   systemd.nix / activation.nix         -> cfg, lib, pkgs, model
+val config :: NiceContainersOwner;
+val cfg :: NiceContainersConfig;
+val model :: NiceContainersModel;
+val lib :: Lib;
+val pkgs :: Pkgs;

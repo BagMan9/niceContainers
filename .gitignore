@@ -1,0 +1,5 @@
+result
+result-*
+.direnv
+# regen.sh scratch output; the real stub (nice-containers.tix) is committed
+tix-stubs/nice-containers.generated.tix
