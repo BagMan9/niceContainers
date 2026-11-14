@@ -1,12 +1,47 @@
+# The `niceContainers` options schema, as a tix type. tix does not evaluate the
+# NixOS module system, so it can't derive this from the option declarations
+# below — it's hand-maintained: edit it when you add/remove an option. It must be
+# SELF-CONTAINED (inline nested shapes), because tix's cross-file
+# `import("./default.nix").NiceContainersConfig` extracts this one alias and does
+# NOT carry references to sibling aliases.
+/**
+  type NiceContainersConfig = {
+     enable: bool,
+     hostWan: string,
+     forwardInterfaces: [string],
+     api: { containers: { ... }, ... },
+     interfaceConfig: {
+       baseSubnet: string,
+       bridgeName: string,
+       isolatedTrunk: string,
+       freeTrunk: string,
+       fixTailscale: bool,
+     },
+     groupConfig: { _: { isolated: bool, cidrMask: int, vid: int } },
+     egress: { _: { wanInterface: string, vid: int, tableId: int } },
+     containers: { _: {
+       enable: bool,
+       groups: [string],
+       egress: string,
+       forwardPorts: [string],
+       hostBinds: [string],
+       matchSystemd: string,
+       extraServiceConfig: { ... },
+       mounts: [{ path: string, group: string, ro: bool }],
+     } },
+   };
+*/
 {
   config,
+  # type: lib :: Lib
   lib,
+  # type: pkgs :: Pkgs
   pkgs,
   ...
 }:
-# TODO: Add port forwarding (both for something like traefik and something like qbit)
 # TODO: Add inline defs, nspawn / vm / multihost semantics
 let
+  # type: cfg :: NiceContainersConfig
   cfg = config.niceContainers;
   model = import ./model.nix { inherit lib cfg; };
   networkd = import ./networkd.nix { inherit lib cfg model; };
@@ -26,9 +61,15 @@ let
       pkgs
       ;
   };
-  inherit (lib) mapAttrsToList;
+  inherit (lib) mapAttrsToList concatMap concatStringsSep;
+  # type mode :: import("./model.nix").NiceContainersModel
   inherit (model) enabledContainers sviList sviDict;
-  inherit (builtins) filter attrValues;
+  inherit (builtins)
+    filter
+    attrValues
+    # type: string -> string -> [string | null]
+    match
+    ;
 in
 {
   options =
@@ -181,28 +222,33 @@ in
     niceContainers.api.containers = model.evalContainers;
     users.groups =
       let
-        allResource = lib.concatMap (c: c.mounts) <| lib.attrValues enabledContainers;
+        allResource = concatMap (c: c.mounts) <| lib.attrValues enabledContainers;
       in
       lib.genAttrs (map (r: r.group) allResource) (_: { });
-    # services.unbound = {
-    #   enable = true;
-    #   settings = {
-    #     server = {
-    #       access-control = [ "0.0.0.0/0 allow" ];
-    #       interface = builtins.attrNames sviDict;
-    #       outgoing-interface = cfg.hostWan;
-    #     };
-    #     forward-zone = [
-    #       {
-    #         name = ".";
-    #         forward-tls-upstream = false;
-    #         forward-addr = [
-    #           "192.168.86.100"
-    #         ];
-    #       }
-    #     ];
-    #   };
-    # };
+    # TODO: Move unbound to be containerized, and be the sole non-isolated container on egress vlans, such that it can function as the dns for everything on that VLAN (would allow future non-shared lookups by interface, etc)
+    services.unbound = {
+      enable = true;
+      settings = {
+        server = {
+          access-control = [ "0.0.0.0/0 allow" ];
+          interface = "10.10.0.0";
+          interface-automatic = true;
+          tls-cert-bundle = "/etc/ssl/certs/ca-certificates.crt";
+        };
+        forward-zone = [
+          {
+            name = ".";
+            forward-tls-upstream = true;
+            forward-addr = [
+              "9.9.9.10@853#dns10.quad9.net"
+              "149.112.112.10@853#dns10.quad9.net"
+              "2620:fe::10@853#dns10.quad9.net"
+              "2620:fe::fe:10@853#dns10.quad9.net"
+            ];
+          }
+        ];
+      };
+    };
 
     boot.kernel.sysctl = {
       "net.ipv4.ip_forward" = 1;
@@ -250,7 +296,17 @@ in
                 FirewallMark = 1;
                 Priority = 10;
                 Table = 52;
-              });
+              })
+              ++ (
+                filter (s: !lib.hasPrefix "host" s.name) sviList
+                |> lib.imap (
+                  i: s: {
+                    To = toString s.subnet;
+                    Priority = 50 + i;
+                    Table = model.vrfTables.${model.names.vrfRoutingTable s.name};
+                  }
+                )
+              );
             };
           })
         ];
@@ -260,14 +316,6 @@ in
       systemd.extraSetup
     ];
 
-    # Activation scripts are bash snippets concatenated into
-    # /run/current-system/activate. They run as root on every switch AND every
-    # boot, before systemd units are (re)started/reloaded — so they must be
-    # idempotent, and anything they delete here is recreated by the networkd
-    # reload that switch-to-configuration performs afterwards. At boot no
-    # interfaces exist yet, so this is a no-op. PATH is minimal during
-    # activation; the script pins its dependencies via runtimeInputs.
-    # (Not run by `nixos-rebuild dry-activate` since it mutates state.)
     system.activationScripts."niceContainers-netdevs".text = ''
       ${activation.reconcile}/bin/niceContainers-reconcile-netdevs \
         || echo "niceContainers: netdev reconciliation failed" >&2
@@ -278,11 +326,6 @@ in
       useNetworkd = true;
       firewall = {
         checkReversePath = false;
-        allowedTCPPorts = [ 5056 ];
-        allowedUDPPorts = [
-          51820
-          51821
-        ];
       };
       nftables = {
         enable = true;
@@ -316,17 +359,30 @@ in
               parsePortForward =
                 def:
                 let
-                  idxParse = builtins.elemAt <| builtins.match "([[:digit:]]+):([[:digit:]]+)(/tcp|/udp)?" def;
+                  idxParse = builtins.elemAt <| match "([[:digit:]]+):([[:digit:]]+)(/tcp|/udp)?" def;
                 in
                 {
+                  # type: string
                   egressSide = idxParse 0;
+                  # type: string
                   containerSide = idxParse 1;
-                  proto = if (idxParse 2 != null) then idxParse 2 |> lib.removePrefix "/" else "tcp";
+                  proto =
+                    let
+                      pro = idxParse 2;
+                    in
+                    if (pro != null) then pro |> lib.removePrefix "/" else "tcp";
                 };
-              getMeta = container: {
-                ifname = container.egressVlan.svi.wan or cfg.hostWan;
-                ip = container.trunkConfig.isolated.addr.noMask;
-              };
+              getMeta =
+                container:
+                let
+                  egressVlan = container.egressVlan;
+                  svi = if egressVlan != null then egressVlan.svi else null;
+                in
+                {
+                  ifname = if svi != null then svi.wan or cfg.hostWan else cfg.hostWan;
+                  # type: string
+                  ip = container.trunkConfig.isolated.addr.noMask;
+                };
               entryToString =
                 entry:
                 "${entry.proto} . ${entry.ifname} . ${entry.egressSide} : ${entry.ip} . ${entry.containerSide}";
@@ -338,15 +394,14 @@ in
                 map (
                   p: entryToString <| (parsePortForward p) // meta
                 ) cfg.containers.${container.name}.forwardPorts;
-              fwds =
-                lib.concatMap mkContainerEntry <| mapAttrsToList (n: v: v // { name = n; }) model.evalContainers;
+              fwds = concatMap mkContainerEntry <| mapAttrsToList (n: v: v // { name = n; }) model.evalContainers;
             in
             {
               enable = fwds != [ ];
               content = ''
                 map vrf_fwd_map {
                 type inet_proto . ifname . inet_service : ipv4_addr . inet_service
-                elements = { ${lib.concatStringsSep ", " fwds} }
+                elements = { ${concatStringsSep ", " fwds} }
                 }
 
                 chain prerouting {
@@ -362,12 +417,16 @@ in
               parseForwardPartial =
                 def:
                 let
-                  idxParse = builtins.elemAt <| builtins.match "([[:digit:]]+):([[:digit:]]+)(/tcp|/udp)?" def;
+                  idxParse = builtins.elemAt <| match "([[:digit:]]+):([[:digit:]]+)(/tcp|/udp)?" def;
                 in
                 map (iface: {
                   hostSide = idxParse 0;
                   containerSide = idxParse 1;
-                  proto = if (idxParse 2 != null) then idxParse 2 |> lib.removePrefix "/" else "tcp";
+                  proto =
+                    let
+                      pro = idxParse 2;
+                    in
+                    if (pro != null) then pro |> lib.removePrefix "/" else "tcp";
                   ifname = iface;
                 }) cfg.forwardInterfaces;
               getMeta = container: {
@@ -381,10 +440,10 @@ in
                 let
                   meta = getMeta container;
                 in
-                lib.concatMap (p: parseForwardPartial p) cfg.containers.${container.name}.hostBinds
+                concatMap (p: parseForwardPartial p) cfg.containers.${container.name}.hostBinds
                 |> map (e: e // meta |> entryToString);
               fwds =
-                lib.concatMap mkContainerEntries <| mapAttrsToList (n: v: v // { name = n; }) model.evalContainers;
+                concatMap mkContainerEntries <| mapAttrsToList (n: v: v // { name = n; }) model.evalContainers;
             in
             {
               family = "inet";
@@ -392,7 +451,7 @@ in
               content = ''
                 map host_bind_map {
                   type inet_proto . ifname . inet_service : ipv4_addr . inet_service
-                  elements = { ${lib.concatStringsSep ", " fwds} }
+                  elements = { ${concatStringsSep ", " fwds} }
                 }
 
                 chain prerouting {

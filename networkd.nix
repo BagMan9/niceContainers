@@ -1,15 +1,22 @@
 {
+  # type: lib :: Lib
   lib,
+  # type: cfg :: import("./default.nix").NiceContainersConfig
   cfg,
+  # type: model :: import("./model.nix").NiceContainersModel
   model,
 }:
 let
   inherit (builtins) listToAttrs filter;
-  inherit (lib) nameValuePair mapAttrs';
+  inherit (lib)
+    # type: nameValuePair :: string -> a -> {name: string, value: a}
+    nameValuePair
+    # type: mapAttrs' :: (string -> a -> {name: string, value: b}) -> {_: a} -> {_: b}
+    mapAttrs'
+    ;
   inherit (model)
     sviList
     evalContainers
-    enabledContainers
     names
     ;
   templates = {
@@ -128,7 +135,9 @@ let
         };
       groupBridgePort =
         {
+          # type: string
           name,
+
           vlanList,
         }:
         {

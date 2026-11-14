@@ -1,11 +1,14 @@
 {
+  # type: lib :: Lib
   lib,
+  # type: pkgs :: Pkgs
   pkgs,
+  # type: cfg :: import("./default.nix").NiceContainersConfig
   cfg,
+  # type: model :: import("./model.nix").NiceContainersModel
   model,
 }:
 let
-  inherit (builtins) filter;
   inherit (model) sviList vrfTables names;
 
   # The netdevs whose defining property is fixed at creation time: networkd's
@@ -18,11 +21,22 @@ let
       kind = "vlan";
       prop = s.vid;
     }) sviList)
-    ++ (map (s: {
-      name = s.svi.vrf;
-      kind = "vrf";
-      prop = vrfTables.${names.vrfToRoutingTable s.svi.vrf};
-    }) (filter (s: s.svi ? vrf) sviList));
+    ++ (lib.concatMap (
+      s:
+      let
+        svi = s.svi;
+      in
+      if svi ? vrf then
+        [
+          {
+            name = svi.vrf;
+            kind = "vrf";
+            prop = vrfTables.${names.vrfToRoutingTable svi.vrf};
+          }
+        ]
+      else
+        [ ]
+    ) sviList);
 
   manifest = pkgs.writeText "niceContainers-netdevs.json" (builtins.toJSON wantedNetdevs);
 

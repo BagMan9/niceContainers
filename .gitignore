@@ -1,5 +1,5 @@
 result
 result-*
 .direnv
-# regen.sh scratch output; the real stub (nice-containers.tix) is committed
-tix-stubs/nice-containers.generated.tix
+# regen-types.sh scratch output; the real types (types.nix) are committed
+types.generated.tix

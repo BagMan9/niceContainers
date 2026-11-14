@@ -1,23 +1,42 @@
 {
+  # type: lib :: Lib
   lib,
+  # type: pkgs :: Pkgs
   pkgs,
+  # type: cfg :: import("./default.nix").NiceContainersConfig
   cfg,
+  # type: model :: import("./model.nix").NiceContainersModel
   model,
 }:
 let
-  inherit (lib) mapAttrs' nameValuePair;
+  inherit (lib)
+    optionals
+    flatten
+    # type: string -> a -> {name: string, value: a}
+    nameValuePair
+    # type: (string -> a -> {name: string, value: b}) -> {_: a} -> {_: b}
+    mapAttrs'
+    # type: (a -> bool) -> [a] -> {right: [a], wrong: [a]}
+    partition
+    ;
   inherit (model)
     evalContainers
     groupAddrMap
-    enabledContainers
     parseGroupRef
     ;
+  inherit (builtins)
+    # type: attrValues :: {_: a} -> [a]
+    attrValues
+    ;
   ip = "${pkgs.iproute2}/bin/ip";
-
   ipCmds = {
     setUp = dev: "${ip} link set ${dev} up";
-    setAddr = addr: dev: "${ip} addr add ${addr} dev ${dev}";
-    setDefaultRoute = gw: "${ip} route add default via ${gw}";
+    setAddr =
+      # type: addr :: string
+      addr: dev: "${ip} addr add ${addr} dev ${dev}";
+    setDefaultRoute =
+      # type: gw :: string
+      gw: "${ip} route add default via ${gw}";
 
     createLink =
       {
@@ -29,17 +48,28 @@ let
       }:
       "${ip} link add ${dev} address ${nearMac} type veth peer name ${hostDev} address ${hostMac} netns /proc/1/ns/net";
   };
-
   createContainerPort =
     with ipCmds;
     {
+      # type: string
       dev,
+      # type: string
       hostDev,
+      # type: string
       nearMac,
+      # type: string
       hostMac,
       addr ? null,
+      # type: string
       gw ? null,
     }:
+    let
+      defaultRoute = optionals (gw != null && addr != null) [
+        #tix-ignore
+        (setAddr addr dev)
+        (setDefaultRoute gw)
+      ];
+    in
     [
       (createLink {
         inherit
@@ -51,17 +81,18 @@ let
       })
       (setUp dev)
     ]
-    ++ (lib.lists.optionals (gw != null && addr != null) [
-      (setAddr addr dev)
-      (setDefaultRoute gw)
-    ]);
+    ++ defaultRoute;
 
   createVlanInterface =
     with ipCmds;
     {
+      # type: string
       dev,
+      # type: string
       name,
+      # type: int
       vid,
+      # type: string
       addr,
     }:
     [
@@ -75,7 +106,7 @@ in
   containerServices = mapAttrs' (
     n: c:
     let
-      p = lib.lists.partition (m: !m.ro) c.mounts;
+      p = partition (m: !m.ro) c.mounts;
       rw_mounts = p.right;
       ro_mounts = p.wrong;
       guardSetup =
@@ -86,7 +117,7 @@ in
         ];
       isoSetup = createContainerPort c.trunkConfig.isolated;
       freeSetup = createContainerPort c.trunkConfig.free;
-      groupSetup = map createVlanInterface (builtins.attrValues c.groupVlans);
+      groupSetup = map createVlanInterface <| attrValues c.groupVlans;
       hostsText =
         let
           pairToText = n: { addr, ... }: "${addr.noMask} ${n}";
@@ -104,15 +135,15 @@ in
           |> map getHosts
           |> lib.mergeAttrsList
           |> lib.mapAttrsToList pairToText
+          |> (x: x ++ [ "127.0.0.1 localhost" ])
           |> lib.concatStringsSep "\n"
         );
 
-      #WARN: Temporary until we can switch to per-egress unbound over
       resolveText = pkgs.writeText "${n}-resolve" ''
-        nameserver 1.1.1.1
+        nameserver ${c.egressVlan.subnet.gateway.noMask}
       '';
 
-      fullSetup = lib.flatten [
+      fullSetup = flatten [
         guardSetup
         isoSetup
         freeSetup
@@ -120,6 +151,12 @@ in
       ];
 
       extraService = c.extraServiceConfig.serviceConfig or { };
+
+      extraPaths =
+        let
+          confguard = extraService.BindReadOnlyPaths or [ ];
+        in
+        if (builtins.isList confguard) then confguard else lib.singleton confguard;
 
       extraSetup =
         let
@@ -131,7 +168,7 @@ in
     <| lib.mkMerge [
       {
         serviceConfig = {
-          PrivateNetwork = true;
+          PrivateNetwork = lib.mkForce true;
           ExecStartPre = map (s: "+${s}") <| fullSetup ++ extraSetup;
 
           SupplementaryGroups = map (r: r.group) c.mounts;
@@ -139,14 +176,16 @@ in
           BindReadOnlyPaths =
             (map (r: r.path) ro_mounts)
             ++ lib.singleton "${hostsText}:/etc/hosts"
-            ++ lib.optional (c.egressVlan != null) "${resolveText}:/etc/resolv.conf";
+            ++ lib.optional (c.egressVlan != null) "${resolveText}:/etc/resolv.conf"
+            ++ extraPaths;
 
           DynamicUser = true;
           User = lib.mkForce null;
           Group = lib.mkForce null;
 
           NoNewPrivileges = true;
-          ProtectHome = true;
+          # difference between this and "yes?"
+          ProtectHome = lib.mkForce true;
           ProtectClock = true;
           InaccessiblePaths = "/run/nscd";
           PrivateTmp = lib.mkForce "disconnected"; # Stricter version enabled by DynamicUser
@@ -160,7 +199,8 @@ in
           RemoveIPC = true;
           ProtectHostname = true;
           # Weak process isolation
-          ProtectProc = "invisible";
+
+          ProtectProc = lib.mkForce "invisible";
           # Strong process isolation (pid 1)
           # Currently broken w/ DynamicUser, see systemd#41014
           # PrivatePIDs = true;
@@ -174,7 +214,10 @@ in
             "~@privileged"
           ];
         }
-        // (removeAttrs extraService [ "ExecStartPre" ]);
+        // (removeAttrs extraService [
+          "ExecStartPre"
+          "BindReadOnlyPaths"
+        ]);
       }
       (removeAttrs c.extraServiceConfig [ "serviceConfig" ])
     ]
@@ -191,7 +234,7 @@ in
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = true;
-        ExecStart = "sysctl -w net.ipv4.conf.tailscale0.rp_filter=0";
+        ExecStart = "${pkgs.sysctl}/bin/sysctl -w net.ipv4.conf.tailscale0.rp_filter=0";
       };
     };
   };

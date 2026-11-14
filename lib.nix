@@ -1,4 +1,8 @@
-{ lib, ... }:
+{
+  # type: lib :: Lib
+  lib,
+  ...
+}:
 let
   pow = lib.fix (
     self: base: power:
@@ -10,14 +14,14 @@ rec {
 
   strHashToInt =
     s: start: end:
-    lib.fromHexString <| builtins.substring start end s;
+    lib.fromHexString (builtins.substring start end s);
 
   hashToIpStub =
     hash: offset:
     let
-      # hash = builtins.hashString "sha256" name;
       hex = strHashToInt hash (offset + 0) 4;
       high = hex / 256;
+      # type: low :: int
       low = builtins.bitAnd hex 255;
     in
     {
@@ -27,6 +31,7 @@ rec {
     hash: offset:
     let
       base = builtins.substring (offset + 0) 10 hash;
+      # type: pairs :: [string]
       pairs = builtins.match "([[:alnum:]]{2})([[:alnum:]]{2})([[:alnum:]]{2})([[:alnum:]]{2})([[:alnum:]]{2})" base;
     in
     lib.strings.concatStringsSep ":" pairs;

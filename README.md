@@ -29,7 +29,13 @@ niceContainers = {
 
 ## Typing (tix)
 
-`tix.toml` + `tix-stubs/nice-containers.tix` give the tix LSP types for `cfg` /
-`model` / `config` (which it can't infer, since it doesn't evaluate the module
-system). The stub is hand-maintained — edit it when you change `default.nix`
-options. See the stub header and `tix-stubs/regen.sh`.
+tix can't infer `cfg` / `model` on its own (it doesn't evaluate the NixOS module
+system), so their shapes live as doc-comment `type` aliases in the files that own
+them — `NiceContainersConfig` atop `default.nix`, `NiceContainersModel` atop
+`model.nix` — and each module file references them with inline annotations on its
+parameters, e.g. `# type: cfg :: import("./default.nix").NiceContainersConfig`.
+No `.tix` stub, no `[context]` — just `[project]` background inference in
+`tix.toml`. The aliases are hand-maintained: edit them when you change the
+`default.nix` options / `model.nix` return (they must be self-contained — inline
+nested shapes, since cross-file `import().Alias` drops sibling references).
+`regen-types.sh` re-derives the shape to help port big option changes.

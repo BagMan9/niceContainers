@@ -1,0 +1,5 @@
+module lib  {
+    module attrsets {
+     val nameValuePair :: string -> a -> { _: a };
+    }
+}
