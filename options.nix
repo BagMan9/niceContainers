@@ -3,6 +3,7 @@
 { lib, ... }:
 let
   inherit (lib) mkOption mkEnableOption types;
+  net = import ./net.nix { inherit lib; };
   resourceConf = {
     options = {
       path = mkOption {
@@ -58,7 +59,7 @@ let
     };
   };
 
-  portSpec = types.strMatching "([[:digit:]]+):([[:digit:]]+)(/tcp|/udp)?";
+  portSpec = types.strMatching net.portSpecRegex;
 in
 {
   options.niceContainers = {

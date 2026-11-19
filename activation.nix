@@ -16,27 +16,19 @@ let
   # these drifts from config it must be deleted out-of-band — networkd then
   # recreates it from the (already changed) .netdev file on reload.
   wantedNetdevs =
-    (map (s: {
+    map (s: {
       name = names.svi s.name;
       kind = "vlan";
       prop = s.vid;
-    }) sviList)
-    ++ (lib.concatMap (
+    }) sviList
+    ++ lib.concatMap (
       s:
-      let
-        svi = s.svi;
-      in
-      if svi ? vrf then
-        [
-          {
-            name = svi.vrf;
-            kind = "vrf";
-            prop = vrfTables.${names.vrfToRoutingTable svi.vrf};
-          }
-        ]
-      else
-        [ ]
-    ) sviList);
+      lib.optional (s.svi ? vrf) {
+        name = s.svi.vrf;
+        kind = "vrf";
+        prop = vrfTables.${names.vrfRoutingTable s.name};
+      }
+    ) sviList;
 
   manifest = pkgs.writeText "niceContainers-netdevs.json" (builtins.toJSON wantedNetdevs);
 

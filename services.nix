@@ -137,7 +137,9 @@ let
         in
         pkgs.writeText "${n}-hosts" (
           lib.concatStringsSep "\n" (
-            lib.mapAttrsToList pairToText (lib.mergeAttrsList (map (g: getHosts (parseGroupRef g)) c.groups))
+            lib.mapAttrsToList pairToText (
+              lib.mergeAttrsList (map (g: getHosts (parseGroupRef g).name) c.groups)
+            )
             ++ [ "127.0.0.1 localhost" ]
           )
         );
@@ -162,7 +164,7 @@ let
         BindPaths = map (r: r.path) rw_mounts;
         BindReadOnlyPaths =
           (map (r: r.path) ro_mounts)
-          ++ lib.singleton "${hostsText}:/etc/hosts"
+          ++ [ "${hostsText}:/etc/hosts" ]
           ++ lib.optional (c.egressVlan != null) "${resolveText}:/etc/resolv.conf";
         InaccessiblePaths = "/run/nscd";
         SystemCallFilter = c.syscallFilter;

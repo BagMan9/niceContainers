@@ -4,238 +4,54 @@
 let
   cfg = config.niceContainers;
   model = import ./model.nix { inherit lib cfg; };
-  inherit (builtins) listToAttrs filter;
   inherit (lib)
     nameValuePair
     mapAttrs'
+    listToAttrs
+    filter
     ;
-  inherit (model)
-    sviList
-    evalContainers
-    names
-    ;
-  templates = {
-    netdevs = {
-      svi = { name, vid, ... }: {
-        netdevConfig = {
-          Kind = "vlan";
-          Name = names.svi name;
-        };
-        vlanConfig = {
-          Id = vid;
-        };
-      };
-      bridge = name: {
-        netdevConfig = {
-          Name = name;
-          Kind = "bridge";
-        };
-        bridgeConfig = {
-          VLANFiltering = true;
-          DefaultPVID = "none";
-          STP = false;
-          MulticastSnooping = true;
-        };
-      };
-      vrf = { name, ... }: {
-        netdevConfig = {
-          Name = name;
-          Kind = "vrf";
-        };
-        vrfConfig = {
-          Table = model.vrfTables.${names.vrfToRoutingTable name};
-        };
-      };
-    };
-    networks = {
-      sviEgress = { name, svi, ... }: {
-        matchConfig.Name = svi.wan;
-        networkConfig = {
-          VRF = names.vrf name;
-        };
-        routes = [
-          {
-            Destination = "0.0.0.0/0";
-            Scope = "link";
-            Metric = 10;
-          }
-        ];
-      };
-      vrf = { name, ... }: {
-        matchConfig.Name = names.vrf name;
-        networkConfig = {
-          ConfigureWithoutCarrier = true;
-        };
-        routes = [
-          {
-            Destination = "0.0.0.0/0";
-            Type = "unreachable";
-            Metric = 4278198272;
-            Table = names.vrfRoutingTable name;
-          }
-        ];
-      };
-      bridge = { name, sviList }: {
-        matchConfig.Name = name;
-        networkConfig = {
-          ConfigureWithoutCarrier = true;
-          LinkLocalAddressing = false;
-          VLAN = map (s: names.svi s.name) sviList;
-        };
-        bridgeVLANs = map ({ vid, ... }: { VLAN = vid; }) sviList;
-      };
-      svi =
+  inherit (model) sviList names;
+  inherit (cfg.interfaceConfig) bridgeName;
+
+  egressVlans = filter (s: s.svi ? wan) sviList;
+  vrfVlans = filter (s: s.svi ? vrf) sviList;
+  # One networkd unit per VLAN, named "<prio>-<name s>".
+  unitsFor =
+    prio: name: mk: vlans:
+    listToAttrs (map (s: nameValuePair "${prio}-${name s}" (mk s)) vlans);
+
+  # A container's end of a trunk on the bridge. On the isolated trunk it is
+  # an isolated port, and untagged traffic on it is its egress VLAN.
+  containerPorts =
+    trunk:
+    let
+      isolated = trunk == "isolated";
+    in
+    mapAttrs' (
+      _: c:
+      let
+        port = c.trunkConfig.${trunk};
+        egress = if isolated then c.egressVlan else null;
+      in
+      nameValuePair "20-${port.hostDev}" (
         {
-          name,
-          addresses,
-          vrf ? false,
-        }:
-        {
-          matchConfig.Name = names.svi name;
+          matchConfig.Name = port.hostDev;
           networkConfig = {
-            Address = addresses;
-            VRF = lib.mkIf vrf (names.vrf name);
-            ConfigureWithoutCarrier = true;
-            IPv4Forwarding = true;
-          };
-          routes = lib.mkIf (name == "host-binds") [
-            {
-              Destination = model.sviDict."host-binds".subnet;
-              Scope = "link";
-              Table = "main";
-            }
-            {
-              Destination = model.sviDict."host-binds".subnet6;
-              Table = "main";
-            }
-          ];
-        };
-      isolatedBridgePort =
-        {
-          name,
-          vlanList ? [ ],
-          sviVlan ? null,
-        }:
-        {
-          matchConfig.Name = name;
-          networkConfig = {
-            Bridge = cfg.interfaceConfig.bridgeName;
+            Bridge = bridgeName;
             LinkLocalAddressing = false;
           };
-          bridgeConfig.Isolated = true;
           linkConfig.RequiredForOnline = false;
           bridgeVLANs =
-            (lib.lists.optional (sviVlan != null) {
-              VLAN = sviVlan.vid;
-              PVID = sviVlan.vid;
-              EgressUntagged = sviVlan.vid;
-            })
-            ++ (map ({ vid, ... }: { VLAN = vid; }) vlanList);
-        };
-      groupBridgePort =
-        {
-          name,
-
-          vlanList,
-        }:
-        {
-          matchConfig.Name = name;
-          networkConfig = {
-            Bridge = cfg.interfaceConfig.bridgeName;
-            LinkLocalAddressing = false;
-          };
-          linkConfig.RequiredForOnline = false;
-          bridgeVLANs = map ({ vid, ... }: { VLAN = vid; }) vlanList;
-        };
-    };
-  };
-  netdevs = {
-    svi = listToAttrs (map (svi: nameValuePair "10-${svi.name}" (templates.netdevs.svi svi)) sviList);
-    bridge = {
-      "20-${cfg.interfaceConfig.bridgeName}" = templates.netdevs.bridge cfg.interfaceConfig.bridgeName;
-    };
-
-    vrf = listToAttrs (
-      map (
-        { svi, ... }:
-        nameValuePair "10-${svi.vrf}" (
-          templates.netdevs.vrf {
-            name = svi.vrf;
-          }
-        )
-      ) (filter (s: s.svi ? vrf) sviList)
-    );
-  };
-  networks = {
-
-    egress = listToAttrs (
-      map ({ svi, ... }@def: nameValuePair "40-${svi.wan}" (templates.networks.sviEgress def)) (
-        filter (s: s.svi ? wan) sviList
+            lib.optional (egress != null) {
+              VLAN = egress.vid;
+              PVID = egress.vid;
+              EgressUntagged = egress.vid;
+            }
+            ++ map (v: { VLAN = v.vid; }) (filter (v: v.dev == port.dev) (lib.attrValues c.groupVlans));
+        }
+        // lib.optionalAttrs isolated { bridgeConfig.Isolated = true; }
       )
-    );
-
-    container = {
-      isolated = mapAttrs' (
-        _: c:
-        let
-          name = c.trunkConfig.isolated.hostDev;
-          isoGroups = filter ({ dev, ... }: dev == cfg.interfaceConfig.isolatedTrunk) (
-            builtins.attrValues c.groupVlans
-          );
-        in
-        nameValuePair "20-${name}" (
-          templates.networks.isolatedBridgePort {
-            inherit name;
-            sviVlan = c.egressVlan;
-            vlanList = isoGroups;
-          }
-        )
-      ) evalContainers;
-      free = mapAttrs' (
-        _: c:
-        let
-          name = c.trunkConfig.free.hostDev;
-          freeGroups = filter ({ dev, ... }: dev == cfg.interfaceConfig.freeTrunk) (
-            builtins.attrValues c.groupVlans
-          );
-        in
-        nameValuePair "20-${name}" (
-          templates.networks.groupBridgePort {
-            inherit name;
-            vlanList = freeGroups;
-          }
-        )
-      ) evalContainers;
-    };
-    vrf = listToAttrs (
-      map ({ svi, ... }@def: nameValuePair "20-${svi.vrf}" (templates.networks.vrf def)) (
-        filter (s: s.svi ? vrf) sviList
-      )
-    );
-    bridge = {
-      "20-${cfg.interfaceConfig.bridgeName}" = templates.networks.bridge {
-        name = cfg.interfaceConfig.bridgeName;
-        sviList = sviList;
-      };
-    };
-    svi = listToAttrs (
-      map (
-        {
-          name,
-          subnet,
-          svi,
-          ...
-        }@def:
-        nameValuePair "10-${name}" (
-          templates.networks.svi {
-            inherit name;
-            vrf = svi ? vrf;
-            addresses = [ subnet.gateway.wMask ] ++ lib.optional (def ? subnet6) def.subnet6.gateway.wMask;
-          }
-        )
-      ) sviList
-    );
-  };
+    ) model.evalContainers;
 in
 {
   config = lib.mkIf cfg.enable {
@@ -246,18 +62,97 @@ in
         addRouteTablesToIPRoute2 = true;
         routeTables = model.vrfTables;
       };
+
       netdevs = lib.mkMerge [
-        netdevs.svi
-        netdevs.bridge
-        netdevs.vrf
+        (unitsFor "10" (s: s.name) (s: {
+          netdevConfig = {
+            Kind = "vlan";
+            Name = names.svi s.name;
+          };
+          vlanConfig.Id = s.vid;
+        }) sviList)
+        (unitsFor "10" (s: s.svi.vrf) (s: {
+          netdevConfig = {
+            Name = s.svi.vrf;
+            Kind = "vrf";
+          };
+          vrfConfig.Table = model.vrfTables.${names.vrfRoutingTable s.name};
+        }) vrfVlans)
+        {
+          "20-${bridgeName}" = {
+            netdevConfig = {
+              Name = bridgeName;
+              Kind = "bridge";
+            };
+            bridgeConfig = {
+              VLANFiltering = true;
+              DefaultPVID = "none";
+              STP = false;
+              MulticastSnooping = true;
+            };
+          };
+        }
       ];
+
       networks = lib.mkMerge [
-        networks.svi
-        networks.bridge
-        networks.vrf
-        networks.egress
-        networks.container.isolated
-        networks.container.free
+        (unitsFor "10" (s: s.name) (s: {
+          matchConfig.Name = names.svi s.name;
+          networkConfig = {
+            Address = [ s.subnet.gateway.wMask ] ++ lib.optional (s ? subnet6) s.subnet6.gateway.wMask;
+            VRF = lib.mkIf (s.svi ? vrf) s.svi.vrf;
+            ConfigureWithoutCarrier = true;
+            IPv4Forwarding = true;
+          };
+          routes = lib.mkIf (s.routedFromMain or false) (
+            [
+              {
+                Destination = s.subnet;
+                Scope = "link";
+                Table = "main";
+              }
+            ]
+            ++ lib.optional (s ? subnet6) {
+              Destination = s.subnet6;
+              Table = "main";
+            }
+          );
+        }) sviList)
+        {
+          "20-${bridgeName}" = {
+            matchConfig.Name = bridgeName;
+            networkConfig = {
+              ConfigureWithoutCarrier = true;
+              LinkLocalAddressing = false;
+              VLAN = map (s: names.svi s.name) sviList;
+            };
+            bridgeVLANs = map (s: { VLAN = s.vid; }) sviList;
+          };
+        }
+        (unitsFor "20" (s: s.svi.vrf) (s: {
+          matchConfig.Name = s.svi.vrf;
+          networkConfig.ConfigureWithoutCarrier = true;
+          routes = [
+            {
+              Destination = "0.0.0.0/0";
+              Type = "unreachable";
+              Metric = 4278198272;
+              Table = names.vrfRoutingTable s.name;
+            }
+          ];
+        }) vrfVlans)
+        (unitsFor "40" (s: s.svi.wan) (s: {
+          matchConfig.Name = s.svi.wan;
+          networkConfig.VRF = s.svi.vrf;
+          routes = [
+            {
+              Destination = "0.0.0.0/0";
+              Scope = "link";
+              Metric = 10;
+            }
+          ];
+        }) egressVlans)
+        (containerPorts "isolated")
+        (containerPorts "free")
         (lib.optionalAttrs (cfg.forwardInterfaces != [ ]) {
           "10-generic" = {
             matchConfig.Name = "lo";
@@ -274,17 +169,17 @@ in
                 L3MasterDevice = true;
               }
             ]
-            ++ (lib.optional cfg.interfaceConfig.fixTailscale {
+            ++ lib.optional cfg.interfaceConfig.fixTailscale {
               FirewallMark = 1;
               Priority = 10;
               Table = 52;
               Family = "both";
-            })
+            }
             ++ lib.imap (i: s: {
               To = toString s.subnet;
               Priority = 50 + i;
               Table = model.vrfTables.${names.vrfRoutingTable s.name};
-            }) (filter (s: !lib.hasPrefix "host" s.name) sviList);
+            }) egressVlans;
           };
         })
       ];

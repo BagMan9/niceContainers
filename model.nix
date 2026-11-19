@@ -1,7 +1,7 @@
-{
-  lib,
-  cfg,
-}:
+# The network model: every VLAN, its numbers and subnet, and each enabled
+# container's interfaces and addresses, all computed from `cfg` (the
+# niceContainers options). Pure; the modules turn it into host config.
+{ lib, cfg }:
 let
   inherit (lib)
     nameValuePair
@@ -12,91 +12,65 @@ let
     ;
   inherit (builtins) filter listToAttrs mapAttrs;
   utils = import ./net.nix { inherit lib; };
+  inherit (cfg) interfaceConfig;
 
   enabledContainers = lib.filterAttrs (_: c: c.enable) cfg.containers;
+  # "master@<group>" joins <group> over the free trunk, so it reaches every
+  # member even when the group is isolated.
   parseGroupRef = g: {
     isMaster = lib.hasPrefix "master@" g;
     name = lib.removePrefix "master@" g;
-    __toString = self: self.name;
   };
   containerGroups = lib.lists.uniqueStrings (
-    lib.lists.flatten (
+    lib.concatLists (
       mapAttrsToList (_: { groups, ... }: map (g: (parseGroupRef g).name) groups) enabledContainers
     )
   );
 
+  # Interface names are at most 15 characters.
+  truncIfname =
+    prefix: name: "${prefix}${builtins.substring 0 (15 - builtins.stringLength prefix) name}";
+
   names = {
     netnsUnit = containerName: "nice-netns-${containerName}";
-
-    isoBridgeTrunk =
-      containerName:
-      let
-        prefix = "vi-";
-        size = 15 - (builtins.stringLength prefix);
-      in
-      "${prefix}${builtins.substring 0 size containerName}";
-    freeBridgeTrunk =
-      containerName:
-      let
-        prefix = "vf-";
-        size = 15 - (builtins.stringLength prefix);
-      in
-      "${prefix}${builtins.substring 0 size containerName}";
+    isoBridgeTrunk = truncIfname "vi-";
+    freeBridgeTrunk = truncIfname "vf-";
     containerSub =
-      {
-        name,
-        vid,
-        ...
-      }:
+      { name, vid }:
       let
-        postfix = toString vid;
-        buffer = 14 - (builtins.stringLength postfix);
+        suffix = ".${toString vid}";
       in
-      "${builtins.substring 0 buffer name}.${toString vid}";
-
+      "${builtins.substring 0 (15 - builtins.stringLength suffix) name}${suffix}";
     svi = egressName: "${egressName}-svi";
-
     vrf = egressName: "${egressName}-vrf";
-
-    vrfToRoutingTable = builtins.replaceStrings [ "-" ] [ "" ];
-
     vrfRoutingTable = egressName: builtins.replaceStrings [ "-" ] [ "" ] "${egressName}vrf";
   };
 
-  egressVid =
-    name:
-    let
-      vidFromHash = hash: utils.strHashToInt hash 0 3;
-      configVid = cfg.egress."${name}".vid or 0;
-    in
-    if (configVid == 0) then
-      (builtins.bitAnd (vidFromHash (builtins.hashString "sha256" name)) 1023) + 1
+  # A VID from config, or from the name's hash when config leaves it 0.
+  autoVid =
+    name: configured:
+    if configured == 0 then
+      builtins.bitAnd (utils.strHashToInt (builtins.hashString "sha256" name) 0 3) 1023 + 1
     else
-      configVid;
-  grpVid =
-    name:
-    let
-      vidFromHash = hash: utils.strHashToInt hash 0 3;
-      configVid = cfg.groupConfig."${name}".vid or 0;
-    in
-    if (configVid == 0) then
-      (builtins.bitAnd (vidFromHash (builtins.hashString "sha256" name)) 1023) + 1
-    else
-      configVid;
+      configured;
+  egressVid = name: autoVid name (cfg.egress.${name}.vid or 0);
+  grpVid = name: autoVid name (cfg.groupConfig.${name}.vid or 0);
 
-  egressTable =
-    name: auto: if (0 == (cfg.egress.${name}.tableId or 0)) then auto else cfg.egress.${name}.tableId;
-
+  # The VLAN the host forwards `hostBinds` ports into.
+  hostBindsName = "host-binds";
   localForward = {
-    name = "host-binds";
+    name = hostBindsName;
     isolated = true;
-    vid = egressVid "host-binds";
+    vid = egressVid hostBindsName;
     svi = {
-      vrf = names.vrf "host-binds";
+      vrf = names.vrf hostBindsName;
     };
     # The host forwards its ports from its IPv6 addresses too, so this VLAN
     # carries both families.
     dualStack = true;
+    # Connections the host forwards in arrive outside any VRF and are routed
+    # by the main table, which so needs a route to this VLAN.
+    routedFromMain = true;
   };
 
   # NOTE: Approaching this as "gets full host routing table", might move to "gets only gateway"
@@ -107,49 +81,35 @@ let
     svi = { };
   };
 
+  # Every VRF's routing table: `tableId` from config, or else 110 plus its
+  # position among the VRFs in name order.
   vrfTables = listToAttrs (
-    imap0 (i: f: f (i + 110)) (
-      mapAttrsToList
-        (
-          egressName: _: i:
-          nameValuePair "${names.vrfRoutingTable egressName}" (egressTable egressName i)
-        )
-        (
-          cfg.egress
-          // {
-            "host-binds" = {
-              wanInterface = "";
-            };
-          }
-        )
-    )
+    imap0 (
+      i: egressName:
+      let
+        configured = cfg.egress.${egressName}.tableId or 0;
+      in
+      nameValuePair (names.vrfRoutingTable egressName) (if configured == 0 then i + 110 else configured)
+    ) (builtins.sort builtins.lessThan (lib.attrNames cfg.egress ++ [ hostBindsName ]))
   );
 
   vlanDefs =
-    let
-      svi = mapAttrsToList (
-        name:
-        { wanInterface, ... }:
-        {
-          inherit name;
-          svi = {
-            wan = wanInterface;
-            vrf = names.vrf name;
-          };
-          vid = egressVid name;
-          isolated = true;
-        }
-      ) cfg.egress;
-      grps = map (name: {
-        svi = null;
-        isolated = (cfg.groupConfig."${name}".isolated or false);
-        ipv6 = (cfg.groupConfig."${name}".ipv6 or false);
-        vid = grpVid name;
-        inherit name;
-      }) containerGroups;
-    in
-    svi
-    ++ grps
+    mapAttrsToList (name: egress: {
+      inherit name;
+      svi = {
+        wan = egress.wanInterface;
+        vrf = names.vrf name;
+      };
+      vid = egressVid name;
+      isolated = true;
+    }) cfg.egress
+    ++ map (name: {
+      inherit name;
+      svi = null;
+      isolated = cfg.groupConfig.${name}.isolated or false;
+      ipv6 = cfg.groupConfig.${name}.ipv6 or false;
+      vid = grpVid name;
+    }) containerGroups
     ++ [
       localForward
       hostEgress
@@ -162,12 +122,12 @@ let
     let
       # The VID's decimal digits are the subnet hextet (vid 123 is
       # ...:123::/64), to match the `<group>.123` interface names.
-      subnet6 = utils.net.subnet6 "${cfg.interfaceConfig.ulaPrefix}:${toString d.vid}";
+      subnet6 = utils.net.subnet6 "${interfaceConfig.ulaPrefix}:${toString d.vid}";
     in
     d
     // {
       subnet =
-        if (d.ipv6 or false) then
+        if d.ipv6 or false then
           subnet6
         else
           utils.net.subnet [
@@ -180,27 +140,15 @@ let
     // optionalAttrs (d.dualStack or false) { inherit subnet6; }
   ) vlanDefs;
 
+  # VLANs with an interface on the host (egresses, host-binds, host) and
+  # VLANs that only join containers (groups).
   sviList = filter (v: v.svi != null) vlans;
-  grpList = filter (v: v.svi == null) vlans;
   sviDict = listToAttrs (map (v: nameValuePair v.name v) sviList);
-  grpDict = listToAttrs (map (v: nameValuePair "${v.name}" v) grpList);
+  grpDict = listToAttrs (map (v: nameValuePair v.name v) (filter (v: v.svi == null) vlans));
+  hostBindsVlan = sviDict.${hostBindsName};
 
   processContainer =
     name:
-    let
-      hash = builtins.hashString "sha256" name;
-      mkMac = utils.hashToPostMac hash;
-      macs = {
-        isolated = {
-          host = "02:${mkMac 0}";
-          near = "12:${mkMac 0}";
-        };
-        free = {
-          host = "02:${mkMac 10}";
-          near = "12:${mkMac 10}";
-        };
-      };
-    in
     {
       egress,
       groups,
@@ -208,64 +156,59 @@ let
       ...
     }@attrs:
     let
-
+      hash = builtins.hashString "sha256" name;
+      mkMac = utils.hashToPostMac hash;
+      # One veth pair per trunk: `dev` inside the namespace, `hostDev` on the
+      # bridge.
+      trunk = dev: hostDev: macOffset: {
+        inherit dev hostDev;
+        nearMac = "12:${mkMac macOffset}";
+        hostMac = "02:${mkMac macOffset}";
+      };
+      groupVlan =
+        g:
+        let
+          grp = parseGroupRef g;
+          groupDef = grpDict.${grp.name};
+          dev =
+            if !grp.isMaster && groupDef.isolated then
+              interfaceConfig.isolatedTrunk
+            else
+              interfaceConfig.freeTrunk;
+        in
+        nameValuePair grp.name {
+          inherit dev;
+          inherit (groupDef) vid;
+          addr = groupDef.subnet.fromHash hash;
+          name = names.containerSub {
+            inherit (grp) name;
+            inherit (groupDef) vid;
+          };
+        };
     in
     {
       trunkConfig = {
-        free = {
-          dev = cfg.interfaceConfig.freeTrunk;
-          hostDev = names.freeBridgeTrunk name;
-          nearMac = macs.free.near;
-          hostMac = macs.free.host;
-        };
-        isolated = {
-          dev = cfg.interfaceConfig.isolatedTrunk;
-          hostDev = names.isoBridgeTrunk name;
-          nearMac = macs.isolated.near;
-          hostMac = macs.isolated.host;
-        }
-        // (lib.optionalAttrs (egress != "") {
-          addr = sviDict.${egress}.subnet.fromHash hash;
-          gw = sviDict.${egress}.subnet.gateway.noMask;
-        });
+        free = trunk interfaceConfig.freeTrunk (names.freeBridgeTrunk name) 10;
+        isolated =
+          trunk interfaceConfig.isolatedTrunk (names.isoBridgeTrunk name) 0
+          // optionalAttrs (egress != "") {
+            addr = sviDict.${egress}.subnet.fromHash hash;
+            gw = sviDict.${egress}.subnet.gateway.noMask;
+          };
       };
       egressVlan = sviDict.${egress} or null;
       groupVlans =
-        (listToAttrs (
-          map (
-            g:
-            let
-              grp = parseGroupRef g;
-              groupDef = grpDict."${grp}";
-              dev =
-                if grp.isMaster then
-                  cfg.interfaceConfig.freeTrunk
-                else
-                  (if groupDef.isolated then cfg.interfaceConfig.isolatedTrunk else cfg.interfaceConfig.freeTrunk);
-            in
-            nameValuePair "${grp}" {
-              inherit dev;
-              vid = groupDef.vid;
-              addr = groupDef.subnet.fromHash hash;
-              name = names.containerSub {
-                parent = dev;
-                vid = groupDef.vid;
-                name = "${grp}";
-              };
-            }
-          ) groups
-        ))
-        // lib.optionalAttrs (hostBinds != [ ]) {
-          "host-binds" = {
-            vid = sviDict."host-binds".vid;
-            addr = sviDict."host-binds".subnet.fromHash hash;
-            addr6 = sviDict."host-binds".subnet6.fromHash hash;
-            gw6 = sviDict."host-binds".subnet6.gateway.noMask;
-            dev = cfg.interfaceConfig.isolatedTrunk;
+        listToAttrs (map groupVlan groups)
+        // optionalAttrs (hostBinds != [ ]) {
+          ${hostBindsName} = {
+            inherit (localForward) vid;
+            addr = hostBindsVlan.subnet.fromHash hash;
+            addr6 = hostBindsVlan.subnet6.fromHash hash;
+            gw6 = hostBindsVlan.subnet6.gateway.noMask;
+            dev = interfaceConfig.isolatedTrunk;
             name = names.containerSub {
-              parent = cfg.interfaceConfig.isolatedTrunk;
-              vid = sviDict."host-binds".vid;
-              name = "host-binds";
+              name = hostBindsName;
+              inherit (localForward) vid;
             };
           };
         };
@@ -283,15 +226,17 @@ let
     };
   evalContainers = mapAttrs processContainer enabledContainers;
 
+  # The members of group `name`, by container name: their address in it and
+  # whether they joined over the isolated trunk.
   groupAddrMap =
     name:
     concatMapAttrs (
       c:
       { groupVlans, ... }:
-      optionalAttrs (groupVlans ? "${name}") {
+      optionalAttrs (groupVlans ? ${name}) {
         ${c} = {
-          addr = groupVlans."${name}".addr;
-          isolated = (groupVlans."${name}".dev == cfg.interfaceConfig.isolatedTrunk);
+          inherit (groupVlans.${name}) addr;
+          isolated = groupVlans.${name}.dev == interfaceConfig.isolatedTrunk;
         };
       }
     ) evalContainers;
@@ -303,11 +248,9 @@ in
     vrfTables
     parseGroupRef
     enabledContainers
-    vlans
     sviList
-    sviDict
-    grpDict
     evalContainers
     groupAddrMap
     ;
+  hostBinds = hostBindsVlan;
 }
