@@ -129,11 +129,11 @@ let
     name = lib.removePrefix "master@" g;
     __toString = self: self.name;
   };
-  containerGroups =
-    enabledContainers
-    |> mapAttrsToList (_: { groups, ... }: map (g: (parseGroupRef g).name) groups)
-    |> lib.lists.flatten
-    |> lib.lists.uniqueStrings;
+  containerGroups = lib.lists.uniqueStrings (
+    lib.lists.flatten (
+      mapAttrsToList (_: { groups, ... }: map (g: (parseGroupRef g).name) groups) enabledContainers
+    )
+  );
 
   names = {
     netnsUnit = containerName: "nice-netns-${containerName}";
@@ -180,7 +180,7 @@ let
       configVid = cfg.egress."${name}".vid or 0;
     in
     if (configVid == 0) then
-      (x: (builtins.bitAnd x 1023) + 1) <| vidFromHash <| builtins.hashString "sha256" name
+      (builtins.bitAnd (vidFromHash (builtins.hashString "sha256" name)) 1023) + 1
     else
       configVid;
   grpVid =
@@ -190,7 +190,7 @@ let
       configVid = cfg.groupConfig."${name}".vid or 0;
     in
     if (configVid == 0) then
-      (x: (builtins.bitAnd x 1023) + 1) <| vidFromHash <| builtins.hashString "sha256" name
+      (builtins.bitAnd (vidFromHash (builtins.hashString "sha256" name)) 1023) + 1
     else
       configVid;
 
@@ -218,10 +218,8 @@ let
     svi = { };
   };
 
-  vrfTables =
-    listToAttrs
-    <| imap0 (i: f: f (i + 110))
-    <|
+  vrfTables = listToAttrs (
+    imap0 (i: f: f (i + 110)) (
       mapAttrsToList
         (
           egressName: _: i:
@@ -234,7 +232,9 @@ let
               wanInterface = "";
             };
           }
-        );
+        )
+    )
+  );
 
   vlanDefs =
     let

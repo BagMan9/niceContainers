@@ -256,7 +256,7 @@ in
     niceContainers.api.containers = model.evalContainers;
     users.groups =
       let
-        allResource = concatMap (c: c.mounts) <| lib.attrValues enabledContainers;
+        allResource = concatMap (c: c.mounts) (lib.attrValues enabledContainers);
       in
       lib.genAttrs (map (r: r.group) allResource) (_: { });
     # TODO: Move unbound to be containerized, and be the sole non-isolated container on egress vlans, such that it can function as the dns for everything on that VLAN (would allow future non-shared lookups by interface, etc)
@@ -342,16 +342,11 @@ in
                 Table = 52;
                 Family = "both";
               })
-              ++ (
-                filter (s: !lib.hasPrefix "host" s.name) sviList
-                |> lib.imap (
-                  i: s: {
-                    To = toString s.subnet;
-                    Priority = 50 + i;
-                    Table = model.vrfTables.${model.names.vrfRoutingTable s.name};
-                  }
-                )
-              );
+              ++ lib.imap (i: s: {
+                To = toString s.subnet;
+                Priority = 50 + i;
+                Table = model.vrfTables.${model.names.vrfRoutingTable s.name};
+              }) (filter (s: !lib.hasPrefix "host" s.name) sviList);
             };
           })
         ];
@@ -379,12 +374,9 @@ in
         tables = {
           hostRouting =
             let
-              pairs =
-                (
-                  map (s: ''${s.subnet} . "${s.svi.wan or cfg.hostWan}"'')
-                  <| filter ({ svi, ... }: svi != null) sviList
-                )
-                |> lib.strings.concatStringsSep ", ";
+              pairs = lib.concatMapStringsSep ", " (s: ''${s.subnet} . "${s.svi.wan or cfg.hostWan}"'') (
+                filter ({ svi, ... }: svi != null) sviList
+              );
             in
             {
               enable = sviList != [ ];
@@ -405,7 +397,7 @@ in
               parsePortForward =
                 def:
                 let
-                  idxParse = builtins.elemAt <| match "([[:digit:]]+):([[:digit:]]+)(/tcp|/udp)?" def;
+                  idxParse = builtins.elemAt (match "([[:digit:]]+):([[:digit:]]+)(/tcp|/udp)?" def);
                 in
                 {
                   # type: string
@@ -416,7 +408,7 @@ in
                     let
                       pro = idxParse 2;
                     in
-                    if (pro != null) then pro |> lib.removePrefix "/" else "tcp";
+                    if (pro != null) then lib.removePrefix "/" pro else "tcp";
                 };
               getMeta =
                 container:
@@ -437,10 +429,8 @@ in
                 let
                   meta = getMeta container;
                 in
-                map (
-                  p: entryToString <| (parsePortForward p) // meta
-                ) cfg.containers.${container.name}.forwardPorts;
-              fwds = concatMap mkContainerEntry <| mapAttrsToList (n: v: v // { name = n; }) model.evalContainers;
+                map (p: entryToString ((parsePortForward p) // meta)) cfg.containers.${container.name}.forwardPorts;
+              fwds = concatMap mkContainerEntry (mapAttrsToList (n: v: v // { name = n; }) model.evalContainers);
             in
             {
               enable = fwds != [ ];
@@ -466,7 +456,7 @@ in
               parseForwardPartial =
                 def:
                 let
-                  idxParse = builtins.elemAt <| match "([[:digit:]]+):([[:digit:]]+)(/tcp|/udp)?" def;
+                  idxParse = builtins.elemAt (match "([[:digit:]]+):([[:digit:]]+)(/tcp|/udp)?" def);
                 in
                 map (iface: {
                   hostSide = idxParse 0;
@@ -475,7 +465,7 @@ in
                     let
                       pro = idxParse 2;
                     in
-                    if (pro != null) then pro |> lib.removePrefix "/" else "tcp";
+                    if (pro != null) then lib.removePrefix "/" pro else "tcp";
                   ifname = iface;
                 }) cfg.forwardInterfaces;
               entryToString =
@@ -484,12 +474,14 @@ in
               # `pick` chooses the family: the leg's `addr` or its `addr6`.
               mkContainerEntries =
                 pick: container:
-                concatMap (p: parseForwardPartial p) cfg.containers.${container.name}.hostBinds
-                |> map (e: e // { ip = (pick container.groupVlans."host-binds").noMask; } |> entryToString);
+                map (e: entryToString (e // { ip = (pick container.groupVlans."host-binds").noMask; })) (
+                  concatMap (p: parseForwardPartial p) cfg.containers.${container.name}.hostBinds
+                );
               fwdsOf =
                 pick:
-                concatMap (mkContainerEntries pick)
-                <| mapAttrsToList (n: v: v // { name = n; }) model.evalContainers;
+                concatMap (mkContainerEntries pick) (
+                  mapAttrsToList (n: v: v // { name = n; }) model.evalContainers
+                );
               fwds = fwdsOf (leg: leg.addr);
               fwds6 = fwdsOf (leg: leg.addr6);
             in

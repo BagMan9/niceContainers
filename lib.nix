@@ -31,10 +31,9 @@ rec {
   # without leading zeros so they read the same as in `ip addr` output.
   hashToIp6Host =
     hash: offset:
-    lib.range 0 3
-    |> map (i: strHashToInt hash (offset + i * 4) 4)
-    |> map (n: lib.toLower (lib.toHexString n))
-    |> lib.concatStringsSep ":";
+    lib.concatMapStringsSep ":" (
+      i: lib.toLower (lib.toHexString (strHashToInt hash (offset + i * 4) 4))
+    ) (lib.range 0 3);
   hashToPostMac =
     hash: offset:
     let
@@ -46,7 +45,7 @@ rec {
 
   net =
     let
-      ipFromStr = str: map lib.toIntBase10 <| lib.strings.splitString "." str;
+      ipFromStr = str: map lib.toIntBase10 (lib.strings.splitString "." str);
       addIp =
         listForm: num:
         lib.imap0 (

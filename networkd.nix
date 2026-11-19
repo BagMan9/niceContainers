@@ -99,7 +99,7 @@ let
           matchConfig.Name = names.svi name;
           networkConfig = {
             Address = addresses;
-            VRF = lib.mkIf vrf <| names.vrf name;
+            VRF = lib.mkIf vrf (names.vrf name);
             ConfigureWithoutCarrier = true;
             IPv4Forwarding = true;
           };
@@ -171,15 +171,15 @@ in
             name = svi.vrf;
           }
         )
-      )
-      <| filter (s: s.svi ? vrf) sviList
+      ) (filter (s: s.svi ? vrf) sviList)
     );
   };
   networks = {
 
     egress = listToAttrs (
-      map ({ svi, ... }@def: nameValuePair "40-${svi.wan}" (templates.networks.sviEgress def))
-      <| filter (s: s.svi ? wan) sviList
+      map ({ svi, ... }@def: nameValuePair "40-${svi.wan}" (templates.networks.sviEgress def)) (
+        filter (s: s.svi ? wan) sviList
+      )
     );
 
     container = {
@@ -216,8 +216,9 @@ in
       ) evalContainers;
     };
     vrf = listToAttrs (
-      map ({ svi, ... }@def: nameValuePair "20-${svi.vrf}" (templates.networks.vrf def))
-      <| filter (s: s.svi ? vrf) sviList
+      map ({ svi, ... }@def: nameValuePair "20-${svi.vrf}" (templates.networks.vrf def)) (
+        filter (s: s.svi ? vrf) sviList
+      )
     );
     bridge = {
       "20-${cfg.interfaceConfig.bridgeName}" = templates.networks.bridge {

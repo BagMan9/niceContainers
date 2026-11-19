@@ -152,13 +152,10 @@ in
             if (thisMap.${n}.isolated) then (lib.filterAttrs masterFilter thisMap) else thisMap;
         in
         pkgs.writeText "${n}-hosts" (
-          c.groups
-          |> map parseGroupRef
-          |> map getHosts
-          |> lib.mergeAttrsList
-          |> lib.mapAttrsToList pairToText
-          |> (x: x ++ [ "127.0.0.1 localhost" ])
-          |> lib.concatStringsSep "\n"
+          lib.concatStringsSep "\n" (
+            lib.mapAttrsToList pairToText (lib.mergeAttrsList (map (g: getHosts (parseGroupRef g)) c.groups))
+            ++ [ "127.0.0.1 localhost" ]
+          )
         );
 
       resolveText = pkgs.writeText "${n}-resolve" ''
@@ -239,7 +236,7 @@ in
       );
       isoSetup = createContainerPort c.trunkConfig.isolated;
       freeSetup = createContainerPort c.trunkConfig.free;
-      groupSetup = map createVlanInterface <| attrValues c.groupVlans;
+      groupSetup = map createVlanInterface (attrValues c.groupVlans);
 
       fullSetup = flatten [
         # `ip netns add` leaves lo down, and the generated /etc/hosts points
