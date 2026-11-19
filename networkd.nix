@@ -1,9 +1,9 @@
-{
-  lib,
-  cfg,
-  model,
-}:
+# systemd-networkd: the bridge, the VLAN interfaces (SVIs) and VRFs on the
+# host side, and each container's bridge ports.
+{ config, lib, ... }:
 let
+  cfg = config.niceContainers;
+  model = import ./model.nix { inherit lib cfg; };
   inherit (builtins) listToAttrs filter;
   inherit (lib)
     nameValuePair
@@ -149,9 +149,7 @@ let
         };
     };
   };
-in
-{
-  devices = {
+  netdevs = {
     svi = listToAttrs (map (svi: nameValuePair "10-${svi.name}" (templates.netdevs.svi svi)) sviList);
     bridge = {
       "20-${cfg.interfaceConfig.bridgeName}" = templates.netdevs.bridge cfg.interfaceConfig.bridgeName;
@@ -178,27 +176,27 @@ in
 
     container = {
       isolated = mapAttrs' (
-        serviceName: config:
+        _: c:
         let
-          name = config.trunkConfig.isolated.hostDev;
+          name = c.trunkConfig.isolated.hostDev;
           isoGroups = filter ({ dev, ... }: dev == cfg.interfaceConfig.isolatedTrunk) (
-            builtins.attrValues config.groupVlans
+            builtins.attrValues c.groupVlans
           );
         in
         nameValuePair "20-${name}" (
           templates.networks.isolatedBridgePort {
             inherit name;
-            sviVlan = config.egressVlan;
+            sviVlan = c.egressVlan;
             vlanList = isoGroups;
           }
         )
       ) evalContainers;
       free = mapAttrs' (
-        serviceName: config:
+        _: c:
         let
-          name = config.trunkConfig.free.hostDev;
+          name = c.trunkConfig.free.hostDev;
           freeGroups = filter ({ dev, ... }: dev == cfg.interfaceConfig.freeTrunk) (
-            builtins.attrValues config.groupVlans
+            builtins.attrValues c.groupVlans
           );
         in
         nameValuePair "20-${name}" (
@@ -237,5 +235,59 @@ in
         )
       ) sviList
     );
+  };
+in
+{
+  config = lib.mkIf cfg.enable {
+    networking.useNetworkd = true;
+    systemd.network = {
+      enable = true;
+      config = {
+        addRouteTablesToIPRoute2 = true;
+        routeTables = model.vrfTables;
+      };
+      netdevs = lib.mkMerge [
+        netdevs.svi
+        netdevs.bridge
+        netdevs.vrf
+      ];
+      networks = lib.mkMerge [
+        networks.svi
+        networks.bridge
+        networks.vrf
+        networks.egress
+        networks.container.isolated
+        networks.container.free
+        (lib.optionalAttrs (cfg.forwardInterfaces != [ ]) {
+          "10-generic" = {
+            matchConfig.Name = "lo";
+            routingPolicyRules = [
+              {
+                FirewallMark = 1;
+                Priority = 11;
+                Table = "main";
+                # A rule with no address is IPv4 only unless told otherwise.
+                Family = "both";
+              }
+              {
+                Priority = 12;
+                L3MasterDevice = true;
+              }
+            ]
+            ++ (lib.optional cfg.interfaceConfig.fixTailscale {
+              FirewallMark = 1;
+              Priority = 10;
+              Table = 52;
+              Family = "both";
+            })
+            ++ lib.imap (i: s: {
+              To = toString s.subnet;
+              Priority = 50 + i;
+              Table = model.vrfTables.${names.vrfRoutingTable s.name};
+            }) (filter (s: !lib.hasPrefix "host" s.name) sviList);
+          };
+        })
+      ];
+    };
   };
 }

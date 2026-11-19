@@ -3,11 +3,12 @@
 
   inputs.nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable";
 
-  outputs =
-    { self, nixpkgs, ... }:
-    {
-      # The NixOS module. Import as inputs.niceContainers.nixosModules.default.
-      nixosModules.default = import ./default.nix;
-      nixosModules.niceContainers = import ./default.nix;
-    };
+  outputs = _: {
+    # The NixOS module. Import as inputs.niceContainers.nixosModules.default.
+    # A path, not `import ./default.nix`: the module system then knows the
+    # file (for errors and option docs) and imports it once even when both
+    # names are imported.
+    nixosModules.default = ./default.nix;
+    nixosModules.niceContainers = ./default.nix;
+  };
 }

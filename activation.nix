@@ -1,10 +1,14 @@
+# Deletes netdevs whose creation-time properties drifted from config, so
+# networkd recreates them.
 {
+  config,
   lib,
   pkgs,
-  cfg,
-  model,
+  ...
 }:
 let
+  cfg = config.niceContainers;
+  model = import ./model.nix { inherit lib cfg; };
   inherit (model) sviList vrfTables names;
 
   # The netdevs whose defining property is fixed at creation time: networkd's
@@ -86,5 +90,10 @@ let
   };
 in
 {
-  inherit reconcile;
+  config = lib.mkIf cfg.enable {
+    system.activationScripts."niceContainers-netdevs".text = ''
+      ${reconcile}/bin/niceContainers-reconcile-netdevs \
+        || echo "niceContainers: netdev reconciliation failed" >&2
+    '';
+  };
 }

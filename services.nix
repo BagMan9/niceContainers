@@ -1,10 +1,14 @@
+# The systemd units: one per container that creates its network namespace,
+# and the wrapping of the service the container runs.
 {
+  config,
   lib,
   pkgs,
-  cfg,
-  model,
+  ...
 }:
 let
+  cfg = config.niceContainers;
+  model = import ./model.nix { inherit lib cfg; };
   inherit (lib)
     optionals
     flatten
@@ -52,8 +56,13 @@ let
     # inside a container's.
     inNetns = netns: cmd: "${ip} netns exec ${netns} ${cmd}";
   };
+  inherit (ipCmds)
+    setUp
+    setAddr
+    setDefaultRoute
+    createLink
+    ;
   createContainerPort =
-    with ipCmds;
     {
       dev,
       hostDev,
@@ -84,7 +93,6 @@ let
   # Any free table number: each namespace has its own tables.
   replyTable = "100";
   createVlanInterface =
-    with ipCmds;
     {
       dev,
       name,
@@ -109,8 +117,6 @@ let
       "${ip} -6 rule add from ${addr6.noMask} lookup ${replyTable}"
     ];
 
-in
-{
   containerServices = mapAttrs' (
     n: c:
     let
@@ -205,13 +211,10 @@ in
       guardSetup = [
         "-${ip} netns del ${n}"
       ]
-      ++ (
-        with c.trunkConfig;
-        map (s: "-${ip} link del ${s}") [
-          isolated.hostDev
-          free.hostDev
-        ]
-      );
+      ++ (map (s: "-${ip} link del ${s}") [
+        c.trunkConfig.isolated.hostDev
+        c.trunkConfig.free.hostDev
+      ]);
       isoSetup = createContainerPort c.trunkConfig.isolated;
       freeSetup = createContainerPort c.trunkConfig.free;
       groupSetup = map createVlanInterface (attrValues c.groupVlans);
@@ -250,5 +253,14 @@ in
         ExecStart = "${pkgs.sysctl}/bin/sysctl -w net.ipv4.conf.tailscale0.rp_filter=0";
       };
     };
+  };
+in
+{
+  config = lib.mkIf cfg.enable {
+    systemd.services = lib.mkMerge [
+      containerServices
+      netnsServices
+      extraSetup
+    ];
   };
 }

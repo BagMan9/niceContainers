@@ -11,7 +11,7 @@ let
     optionalAttrs
     ;
   inherit (builtins) filter listToAttrs mapAttrs;
-  utils = import ./lib.nix { inherit lib; };
+  utils = import ./net.nix { inherit lib; };
 
   enabledContainers = lib.filterAttrs (_: c: c.enable) cfg.containers;
   parseGroupRef = g: {
