@@ -14,12 +14,20 @@
   type Mount = { path: string, group: string, ro: bool };
 */
 /**
-  type Addr = { addr: [int], wMask: string, noMask: string, __toString: a -> string};
+  type Addr = { family: int, wMask: string, noMask: string, __toString: a -> string, ... };
 */
 /**
   type Subnet = {
      ip: { high: int, low: int } -> import("./model.nix").Addr,
+     fromHash: string -> import("./model.nix").Addr,
      addr: [int],
+     gateway: import("./model.nix").Addr,
+     __toString: a -> string
+   };
+*/
+/**
+  type Subnet6 = {
+     fromHash: string -> import("./model.nix").Addr,
      gateway: import("./model.nix").Addr,
      __toString: a -> string
    };
@@ -42,7 +50,8 @@
      isolated: bool,
      vid: int,
      svi: { wan: string, vrf: string } | {vrf: string} | { } | null,
-     subnet: import("./model.nix").Subnet,
+     subnet: import("./model.nix").Subnet | import("./model.nix").Subnet6,
+     ...
    };
 */
 /**
@@ -51,7 +60,8 @@
      isolated: bool,
      vid: int,
      subnet: import("./model.nix").Subnet,
-     svi: { } | { wan: string, vrf: string } | {vrf: string}
+     svi: { } | { wan: string, vrf: string } | {vrf: string},
+     ...
   };
 */
 /**
@@ -61,7 +71,7 @@
        isolated: { dev: string, hostDev: string, nearMac: string, hostMac: string, addr: import("./model.nix").Addr | null, gw: import("./model.nix").Addr },
      },
      egressVlan: VlanEntry | null,
-     groupVlans: { _: { dev: string, vid: int, addr: import("./model.nix").Addr, name: string } },
+     groupVlans: { _: { dev: string, vid: int, addr: import("./model.nix").Addr, name: string, ... } },
      groups: [string],
      matchSystemd: string,
      mounts: [Mount],
@@ -195,6 +205,9 @@ let
     svi = {
       vrf = names.vrf "host-binds";
     };
+    # The host forwards its ports from its IPv6 addresses too, so this VLAN
+    # carries both families.
+    dualStack = true;
   };
 
   # NOTE: Approaching this as "gets full host routing table", might move to "gets only gateway"
@@ -241,6 +254,7 @@ let
       grps = map (name: {
         svi = null;
         isolated = (cfg.groupConfig."${name}".isolated or false);
+        ipv6 = (cfg.groupConfig."${name}".ipv6 or false);
         vid = grpVid name;
         inherit name;
       }) containerGroups;
@@ -251,17 +265,30 @@ let
       localForward
       hostEgress
     ];
+  # An IPv6 group still takes its place in the IPv4 count, so switching one
+  # group over leaves every other subnet, and so every other container, as
+  # it was.
   vlans = imap0 (
     i: d:
+    let
+      # The VID's decimal digits are the subnet hextet (vid 123 is
+      # ...:123::/64), to match the `<group>.123` interface names.
+      subnet6 = utils.net.subnet6 "${cfg.interfaceConfig.ulaPrefix}:${toString d.vid}";
+    in
     d
     // {
-      subnet = utils.net.subnet [
-        10
-        (i + 10)
-        0
-        0
-      ] 16;
+      subnet =
+        if (d.ipv6 or false) then
+          subnet6
+        else
+          utils.net.subnet [
+            10
+            (i + 10)
+            0
+            0
+          ] 16;
     }
+    // optionalAttrs (d.dualStack or false) { inherit subnet6; }
   ) vlanDefs;
 
   # type: sviList :: [SviEntry]
@@ -276,7 +303,6 @@ let
     let
       # type: string
       hash = builtins.hashString "sha256" name;
-      lowAddr = utils.hashToIpStub hash 0;
       mkMac = utils.hashToPostMac hash;
       macs = {
         isolated = {
@@ -313,7 +339,7 @@ let
           hostMac = macs.isolated.host;
         }
         // (lib.optionalAttrs (egress != "") {
-          addr = sviDict.${egress}.subnet.ip lowAddr;
+          addr = sviDict.${egress}.subnet.fromHash hash;
           gw = sviDict.${egress}.subnet.gateway.noMask;
         });
       };
@@ -334,7 +360,7 @@ let
             nameValuePair "${grp}" {
               inherit dev;
               vid = groupDef.vid;
-              addr = groupDef.subnet.ip lowAddr;
+              addr = groupDef.subnet.fromHash hash;
               name = names.containerSub {
                 parent = dev;
                 vid = groupDef.vid;
@@ -346,7 +372,9 @@ let
         // lib.optionalAttrs (hostBinds != [ ]) {
           "host-binds" = {
             vid = sviDict."host-binds".vid;
-            addr = sviDict."host-binds".subnet.ip lowAddr;
+            addr = sviDict."host-binds".subnet.fromHash hash;
+            addr6 = sviDict."host-binds".subnet6.fromHash hash;
+            gw6 = sviDict."host-binds".subnet6.gateway.noMask;
             dev = cfg.interfaceConfig.isolatedTrunk;
             name = names.containerSub {
               parent = cfg.interfaceConfig.isolatedTrunk;

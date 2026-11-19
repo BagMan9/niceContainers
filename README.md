@@ -38,6 +38,24 @@ the unit, so the namespace survives a restart of the service and the service
 stops if the namespace goes away. `ip netns exec <name> ip -br addr` looks
 inside one.
 
+## Addresses
+
+Every address is computed from names, so nothing is allocated or stored.
+
+- Each VLAN (egress, host-binds, group) has an IPv4 /16, `10.<n>.0.0/16`,
+  numbered by its position in the list of VLANs. A container's host part is
+  16 bits of the hash of its name.
+- A group with `groupConfig.<group>.ipv6 = true` has
+  `<interfaceConfig.ulaPrefix>:<vid>::/64` instead, with a 64-bit host part.
+  Its members reach each other over IPv6 only, so every server in it must
+  listen on `::`.
+- Egress legs are always IPv4.
+- The host-binds leg has both families, in `10.<n>.0.0/16` and
+  `<interfaceConfig.ulaPrefix>:<vid>::/64`, so a `hostBinds` port answers on
+  the host's IPv6 addresses too. Inside the namespace only packets sent from
+  that IPv6 address have a route (back through the leg); a program opening
+  its own connections still sees no IPv6.
+
 ## Layout
 
 - `default.nix` — the NixOS module: the `niceContainers` options schema + config wiring.

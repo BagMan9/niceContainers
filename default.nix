@@ -12,12 +12,13 @@
      api: { containers: { ... }, ... },
      interfaceConfig: {
        baseSubnet: string,
+       ulaPrefix: string,
        bridgeName: string,
        isolatedTrunk: string,
        freeTrunk: string,
        fixTailscale: bool,
      },
-     groupConfig: { _: { isolated: bool, cidrMask: int, vid: int } },
+     groupConfig: { _: { isolated: bool, cidrMask: int, vid: int, ipv6: bool } },
      egress: { _: { wanInterface: string, vid: int, tableId: int } },
      containers: { _: {
        enable: bool,
@@ -103,6 +104,15 @@ in
             type = types.ints.between 0 4095;
             default = 0; # 0 Indicates hash / automatic
           };
+          ipv6 = mkOption {
+            type = types.bool;
+            default = false;
+            description = ''
+              Address this group from `interfaceConfig.ulaPrefix` instead
+              of IPv4. Members then reach each other over IPv6 only, so
+              every server in the group must listen on `::`, not `0.0.0.0`.
+            '';
+          };
 
         };
       };
@@ -147,6 +157,15 @@ in
               in
               types.strMatching "(${seg4})\.(${seg4})\.(${seg4})\.(${seg4})/(${cidr4})";
             default = "10.0.0.0/8";
+          };
+          ulaPrefix = mkOption {
+            type = types.strMatching "fd[[:xdigit:]]{2}(:[[:xdigit:]]{1,4}){2}";
+            default = "fd6e:6963:6500";
+            description = ''
+              The /48 that IPv6 groups take their /64s from, as its first
+              three hextets. Never routed off the host: these addresses
+              exist only on the container bridge.
+            '';
           };
 
           bridgeName = mkOption {
@@ -269,6 +288,7 @@ in
       "net.ipv4.ip_forward" = 1;
       "net.ipv4.conf.all.forwarding" = 1;
       "net.ipv4.conf.default.forwarding" = 1;
+      "net.ipv6.conf.all.forwarding" = 1;
     };
     systemd.network = with networkd; {
 
@@ -301,6 +321,8 @@ in
                   FirewallMark = 1;
                   Priority = 11;
                   Table = "main";
+                  # A rule with no address is IPv4 only unless told otherwise.
+                  Family = "both";
                 }
                 {
                   Priority = 12;
@@ -311,6 +333,7 @@ in
                 FirewallMark = 1;
                 Priority = 10;
                 Table = 52;
+                Family = "both";
               })
               ++ (
                 filter (s: !lib.hasPrefix "host" s.name) sviList
@@ -430,6 +453,9 @@ in
           hostBinds =
             let
               hostBindsIface = model.names.svi "host-binds";
+              # Past prerouting the kernel names the VRF, not the interface
+              # enslaved to it, as where a packet came in.
+              hostBindsIn = ''{ "${hostBindsIface}", "${model.names.vrf "host-binds"}" }'';
               parseForwardPartial =
                 def:
                 let
@@ -445,21 +471,20 @@ in
                     if (pro != null) then pro |> lib.removePrefix "/" else "tcp";
                   ifname = iface;
                 }) cfg.forwardInterfaces;
-              getMeta = container: {
-                ip = container.groupVlans."host-binds".addr.noMask;
-              };
               entryToString =
                 entry:
                 "${entry.proto} . ${entry.ifname} . ${entry.hostSide} : ${entry.ip} . ${entry.containerSide}";
+              # `pick` chooses the family: the leg's `addr` or its `addr6`.
               mkContainerEntries =
-                container:
-                let
-                  meta = getMeta container;
-                in
+                pick: container:
                 concatMap (p: parseForwardPartial p) cfg.containers.${container.name}.hostBinds
-                |> map (e: e // meta |> entryToString);
-              fwds =
-                concatMap mkContainerEntries <| mapAttrsToList (n: v: v // { name = n; }) model.evalContainers;
+                |> map (e: e // { ip = (pick container.groupVlans."host-binds").noMask; } |> entryToString);
+              fwdsOf =
+                pick:
+                concatMap (mkContainerEntries pick)
+                <| mapAttrsToList (n: v: v // { name = n; }) model.evalContainers;
+              fwds = fwdsOf (leg: leg.addr);
+              fwds6 = fwdsOf (leg: leg.addr6);
             in
             {
               family = "inet";
@@ -469,20 +494,25 @@ in
                   type inet_proto . ifname . inet_service : ipv4_addr . inet_service
                   elements = { ${concatStringsSep ", " fwds} }
                 }
+                map host_bind_map6 {
+                  type inet_proto . ifname . inet_service : ipv6_addr . inet_service
+                  elements = { ${concatStringsSep ", " fwds6} }
+                }
 
                 chain prerouting {
                   type nat hook prerouting priority -100;
                   fib daddr type local dnat ip to meta l4proto . iifname . th dport map @host_bind_map
+                  fib daddr type local dnat ip6 to meta l4proto . iifname . th dport map @host_bind_map6
                 }
                 # Drop coming out
                 chain forward {
                   type filter hook forward priority filter - 10; policy accept;
-                  iifname "${hostBindsIface}" ct direction original drop
+                  iifname ${hostBindsIn} ct direction original drop
                 }
 
                 chain input {
                   type filter hook input priority filter - 10; policy accept;
-                  iifname "${hostBindsIface}" ct direction original drop
+                  iifname ${hostBindsIn} ct direction original drop
                 }
 
                 # Conditional ip rule-able jump

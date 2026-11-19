@@ -27,6 +27,14 @@ rec {
     {
       inherit high low;
     };
+  # The host half of a /64: 64 bits of the hash as four hextets, written
+  # without leading zeros so they read the same as in `ip addr` output.
+  hashToIp6Host =
+    hash: offset:
+    lib.range 0 3
+    |> map (i: strHashToInt hash (offset + i * 4) 4)
+    |> map (n: lib.toLower (lib.toHexString n))
+    |> lib.concatStringsSep ":";
   hashToPostMac =
     hash: offset:
     let
@@ -56,6 +64,7 @@ rec {
           _octetStr = map toString listForm;
         in
         {
+          family = 4;
           addr = listForm;
           wMask = "${lib.concatStringsSep "." _octetStr}/${toString mask}";
           noMask = "${lib.concatStringsSep "." _octetStr}";
@@ -70,6 +79,8 @@ rec {
         in
         {
           inherit ip;
+          # The address a name gets in this subnet, from its hash alone.
+          fromHash = hash: ip (hashToIpStub hash 0);
           addr = listForm;
           gateway = ip {
             high = 0;
@@ -77,5 +88,19 @@ rec {
           };
           __toString = self: "${lib.concatStringsSep "." _octetStr}/${toString cidr}";
         };
+
+      # The IPv6 counterparts, always a /64. `prefix` is the first four
+      # hextets ("fd6e:6963:6500:123").
+      ipAddr6 = addr: {
+        family = 6;
+        wMask = "${addr}/64";
+        noMask = addr;
+        __toString = self: self.wMask;
+      };
+      subnet6 = prefix: {
+        fromHash = hash: ipAddr6 "${prefix}:${hashToIp6Host hash 0}";
+        gateway = ipAddr6 "${prefix}::1";
+        __toString = self: "${prefix}::/64";
+      };
     };
 }

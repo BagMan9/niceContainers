@@ -92,13 +92,13 @@ let
       svi =
         {
           name,
-          address,
+          addresses,
           vrf ? false,
         }:
         {
           matchConfig.Name = names.svi name;
           networkConfig = {
-            Address = address;
+            Address = addresses;
             VRF = lib.mkIf vrf <| names.vrf name;
             ConfigureWithoutCarrier = true;
             IPv4Forwarding = true;
@@ -107,6 +107,10 @@ let
             {
               Destination = model.sviDict."host-binds".subnet;
               Scope = "link";
+              Table = "main";
+            }
+            {
+              Destination = model.sviDict."host-binds".subnet6;
               Table = "main";
             }
           ];
@@ -228,12 +232,12 @@ in
           subnet,
           svi,
           ...
-        }:
+        }@def:
         nameValuePair "10-${name}" (
           templates.networks.svi {
             inherit name;
             vrf = svi ? vrf;
-            address = subnet.gateway.wMask;
+            addresses = [ subnet.gateway.wMask ] ++ lib.optional (def ? subnet6) def.subnet6.gateway.wMask;
           }
         )
       ) sviList

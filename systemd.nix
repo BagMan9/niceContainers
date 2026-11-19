@@ -39,8 +39,12 @@ let
   ipCmds = {
     setUp = dev: "${ip} link set ${dev} up";
     setAddr =
-      # type: addr :: string
-      addr: dev: "${ip} addr add ${addr} dev ${dev}";
+      # type: addr :: import("./model.nix").Addr
+      addr: dev:
+      # A new IPv6 address is unusable for about a second while the kernel
+      # checks for a duplicate, and the service starts before that: its first
+      # connections would fail. Two names never hash to the same address.
+      "${ip} addr add ${addr} dev ${dev}${lib.optionalString (addr.family == 6) " nodad"}";
     setDefaultRoute =
       # type: gw :: string
       gw: "${ip} route add default via ${gw}";
@@ -94,6 +98,8 @@ let
     ]
     ++ defaultRoute;
 
+  # Any free table number: each namespace has its own tables.
+  replyTable = "100";
   createVlanInterface =
     with ipCmds;
     {
@@ -105,11 +111,24 @@ let
       vid,
       # type: string
       addr,
+      addr6 ? null,
+      # type: string
+      gw6 ? null,
     }:
     [
       "${ip} link add link ${dev} name ${name} type vlan id ${toString vid}"
       (setAddr addr name)
       (setUp name)
+    ]
+    # A leg with a second, IPv6 address takes connections the host forwards
+    # in over IPv6. Only packets sent from that address get a route back out
+    # through it. A plain default route would make every program in the
+    # namespace see IPv6 as reachable and try it first, and the host forwards
+    # none of it.
+    ++ optionals (addr6 != null) [
+      (setAddr addr6 name)
+      "${ip} -6 route add default via ${gw6} dev ${name} table ${replyTable}"
+      "${ip} -6 rule add from ${addr6.noMask} lookup ${replyTable}"
     ];
 
 in
