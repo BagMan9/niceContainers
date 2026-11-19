@@ -19,11 +19,17 @@
       "enp1s0"
       "tailscale0"
     ];
-    interfaceConfig.fixTailscale = true;
     egress = {
-      nyc.wanInterface = "wg-nyc";
+      nyc = {
+        wanInterface = "wg-nyc";
+        nameservers = [ "10.64.0.1" ];
+      };
       lon = {
         wanInterface = "wg-lon";
+        nameservers = [
+          "9.9.9.9"
+          "149.112.112.112"
+        ];
         vid = 300;
         tableId = 200;
       };
@@ -31,6 +37,7 @@
     groupConfig = {
       media.isolated = true;
       v6.ipv6 = true;
+      download.subnet = "192.168.77.0/24";
     };
     containers = {
       sabnzbd = {

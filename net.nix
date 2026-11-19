@@ -8,15 +8,30 @@ rec {
     s: start: len:
     lib.fromHexString (builtins.substring start len s);
 
-  hashToIpStub =
-    hash: offset:
+  pow2 = n: if n == 0 then 1 else 2 * pow2 (n - 1);
+
+  # IPv4 addresses as integers.
+  parseIpv4 = s: lib.foldl' (acc: o: acc * 256 + lib.toIntBase10 o) 0 (lib.splitString "." s);
+  ipv4Octets = n: map (i: lib.mod (n / pow2 (8 * (3 - i))) 256) (lib.range 0 3);
+  formatIpv4 = n: lib.concatMapStringsSep "." toString (ipv4Octets n);
+  cidr4Regex =
     let
-      hex = strHashToInt hash offset 4;
+      seg = "[[:digit:]]{1,3}";
+    in
+    "${seg}\\.${seg}\\.${seg}\\.${seg}/[[:digit:]]{1,2}";
+  # "a.b.c.d/p" as { network; prefixLength; }, host bits cleared.
+  parseCidr4 =
+    s:
+    let
+      parts = lib.splitString "/" s;
+      prefixLength = lib.toIntBase10 (lib.elemAt parts 1);
+      size = pow2 (32 - prefixLength);
     in
     {
-      high = hex / 256;
-      low = builtins.bitAnd hex 255;
+      inherit prefixLength;
+      network = parseIpv4 (lib.head parts) / size * size;
     };
+
   # The host half of a /64: 64 bits of the hash as four hextets, written
   # without leading zeros so they read the same as in `ip addr` output.
   hashToIp6Host =
@@ -49,39 +64,32 @@ rec {
 
   net = rec {
     ipAddr =
-      listForm: mask:
+      n: prefixLength:
       let
-        octets = lib.concatMapStringsSep "." toString listForm;
+        str = formatIpv4 n;
       in
       {
         family = 4;
-        addr = listForm;
-        wMask = "${octets}/${toString mask}";
-        noMask = octets;
+        addr = ipv4Octets n;
+        wMask = "${str}/${toString prefixLength}";
+        noMask = str;
         __toString = self: self.wMask;
       };
+    # An IPv4 subnet, from its network address (an integer) and prefix length.
     subnet =
-      listForm: cidr:
+      network: prefixLength:
       let
-        ip =
-          { high, low }:
-          ipAddr [
-            (builtins.elemAt listForm 0)
-            (builtins.elemAt listForm 1)
-            high
-            low
-          ] cidr;
+        at = host: ipAddr (network + host) prefixLength;
       in
       {
-        inherit ip;
-        # The address a name gets in this subnet, from its hash alone.
-        fromHash = hash: ip (hashToIpStub hash 0);
-        addr = listForm;
-        gateway = ip {
-          high = 0;
-          low = 1;
-        };
-        __toString = _: "${lib.concatMapStringsSep "." toString listForm}/${toString cidr}";
+        inherit network prefixLength;
+        # The address a name gets in this subnet, from its hash alone: the
+        # top (32 - prefixLength) bits of the hash's first 32.
+        fromHash = hash: at (strHashToInt hash 0 8 / pow2 prefixLength);
+        addr = ipv4Octets network;
+        gateway = at 1;
+        broadcast = at (pow2 (32 - prefixLength) - 1);
+        __toString = _: "${formatIpv4 network}/${toString prefixLength}";
       };
 
     # The IPv6 counterparts, always a /64. `prefix` is the first four

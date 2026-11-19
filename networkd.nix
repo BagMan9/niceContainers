@@ -169,12 +169,6 @@ in
                 L3MasterDevice = true;
               }
             ]
-            ++ lib.optional cfg.interfaceConfig.fixTailscale {
-              FirewallMark = 1;
-              Priority = 10;
-              Table = 52;
-              Family = "both";
-            }
             ++ lib.imap (i: s: {
               To = toString s.subnet;
               Priority = 50 + i;

@@ -102,6 +102,7 @@ let
       };
       vid = egressVid name;
       isolated = true;
+      configuredSubnet = egress.subnet;
     }) cfg.egress
     ++ map (name: {
       inherit name;
@@ -109,14 +110,28 @@ let
       isolated = cfg.groupConfig.${name}.isolated or false;
       ipv6 = cfg.groupConfig.${name}.ipv6 or false;
       vid = grpVid name;
+      configuredSubnet = cfg.groupConfig.${name}.subnet or null;
     }) containerGroups
     ++ [
       localForward
       hostEgress
     ];
-  # An IPv6 group still takes its place in the IPv4 count, so switching one
-  # group over leaves every other subnet, and so every other container, as
-  # it was.
+  # VLAN i's IPv4 subnet is slot i + 10 of the pool (`baseSubnet` cut into
+  # `subnetPrefixLength`-sized slots), unless config gives it one. A VLAN
+  # with its own subnet, or an IPv6 group, still takes its slot, so changing
+  # one leaves every other subnet, and so every other container, as it was.
+  pool = utils.parseCidr4 interfaceConfig.baseSubnet;
+  subnet4 =
+    i: d:
+    if d.configuredSubnet or null != null then
+      let
+        c = utils.parseCidr4 d.configuredSubnet;
+      in
+      utils.net.subnet c.network c.prefixLength
+    else
+      utils.net.subnet (
+        pool.network + (i + 10) * utils.pow2 (32 - interfaceConfig.subnetPrefixLength)
+      ) interfaceConfig.subnetPrefixLength;
   vlans = imap0 (
     i: d:
     let
@@ -126,16 +141,7 @@ let
     in
     d
     // {
-      subnet =
-        if d.ipv6 or false then
-          subnet6
-        else
-          utils.net.subnet [
-            10
-            (i + 10)
-            0
-            0
-          ] 16;
+      subnet = if d.ipv6 or false then subnet6 else subnet4 i d;
     }
     // optionalAttrs (d.dualStack or false) { inherit subnet6; }
   ) vlanDefs;
@@ -185,18 +191,21 @@ let
             inherit (groupDef) vid;
           };
         };
+      # null for no egress, and for an undefined one, which assertions.nix
+      # reports.
+      egressVlan = sviDict.${egress} or null;
     in
     {
       trunkConfig = {
         free = trunk interfaceConfig.freeTrunk (names.freeBridgeTrunk name) 10;
         isolated =
           trunk interfaceConfig.isolatedTrunk (names.isoBridgeTrunk name) 0
-          // optionalAttrs (egress != "") {
-            addr = sviDict.${egress}.subnet.fromHash hash;
-            gw = sviDict.${egress}.subnet.gateway.noMask;
+          // optionalAttrs (egressVlan != null) {
+            addr = egressVlan.subnet.fromHash hash;
+            gw = egressVlan.subnet.gateway.noMask;
           };
       };
-      egressVlan = sviDict.${egress} or null;
+      inherit egressVlan;
       groupVlans =
         listToAttrs (map groupVlan groups)
         // optionalAttrs (hostBinds != [ ]) {
@@ -248,6 +257,8 @@ in
     vrfTables
     parseGroupRef
     enabledContainers
+    pool
+    vlans
     sviList
     evalContainers
     groupAddrMap

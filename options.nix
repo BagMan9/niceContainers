@@ -24,9 +24,15 @@ let
         type = types.bool;
         default = false;
       };
-      cidrMask = mkOption {
-        type = types.ints.between 0 32;
-        default = 16;
+      subnet = mkOption {
+        type = types.nullOr cidr4;
+        default = null;
+        description = ''
+          This VLAN's IPv4 subnet, instead of its slot of
+          `interfaceConfig.baseSubnet`. Members' host parts are hashed from
+          their names, so a small subnet makes two members more likely to
+          collide; evaluation fails if they do.
+        '';
       };
       vid = mkOption {
         type = types.ints.between 0 4095;
@@ -48,6 +54,24 @@ let
   egressConf = {
     options = {
       wanInterface = mkOption { type = types.singleLineStr; };
+      nameservers = mkOption {
+        type = types.listOf types.singleLineStr;
+        default = [ ];
+        description = ''
+          The DNS servers of containers on this egress. Their queries leave
+          through the egress like any other traffic.
+        '';
+      };
+      subnet = mkOption {
+        type = types.nullOr cidr4;
+        default = null;
+        description = ''
+          This VLAN's IPv4 subnet, instead of its slot of
+          `interfaceConfig.baseSubnet`. Members' host parts are hashed from
+          their names, so a small subnet makes two members more likely to
+          collide; evaluation fails if they do.
+        '';
+      };
       vid = mkOption {
         type = types.ints.between 0 4095;
         default = 0; # 0 Indicates hash / automatic
@@ -60,6 +84,7 @@ let
   };
 
   portSpec = types.strMatching net.portSpecRegex;
+  cidr4 = types.strMatching net.cidr4Regex;
 in
 {
   options.niceContainers = {
@@ -78,13 +103,21 @@ in
     };
     interfaceConfig = {
       baseSubnet = mkOption {
-        type =
-          let
-            seg4 = "[[:digit:]]{1,3}";
-            cidr4 = "[[:digit:]]{1,2}";
-          in
-          types.strMatching "(${seg4})\.(${seg4})\.(${seg4})\.(${seg4})/(${cidr4})";
+        type = cidr4;
         default = "10.0.0.0/8";
+        description = ''
+          The IPv4 range VLAN subnets are cut from, in slots of
+          `subnetPrefixLength`. VLAN i (egresses, then groups, then the
+          built-in host-binds and host VLANs) takes slot i + 10, so adding a
+          VLAN can move the ones after it; give a VLAN its own `subnet` to
+          pin it. The host routes each VLAN subnet to its containers, so
+          none may overlap a network the host reaches otherwise.
+        '';
+      };
+      subnetPrefixLength = mkOption {
+        type = types.ints.between 8 30;
+        default = 16;
+        description = "The prefix length of each VLAN's slot of `baseSubnet`.";
       };
       ulaPrefix = mkOption {
         type = types.strMatching "fd[[:xdigit:]]{2}(:[[:xdigit:]]{1,4}){2}";
@@ -107,10 +140,6 @@ in
       freeTrunk = mkOption {
         type = types.singleLineStr;
         default = "eth-free";
-      };
-      fixTailscale = mkOption {
-        type = types.bool;
-        default = false;
       };
     };
     groupConfig = mkOption {

@@ -15,11 +15,16 @@ trap 'rm -rf "$work"' EXIT
 mkdir "$work/base"
 git -C "$root" archive "$ref" | tar -x -C "$work/base"
 
+# Each side uses its own fixture where it has one: a change to the options
+# changes the fixture with it.
 evalAt() {
+  local fixture="$1/tests/fixture.nix"
+  [ -f "$fixture" ] || fixture="$root/tests/fixture.nix"
   nix eval --json --impure --expr "
     import $root/tests/golden.nix {
       nixpkgs = builtins.getFlake \"github:nixos/nixpkgs/$rev\";
       module = $1/default.nix;
+      fixture = $fixture;
     }" | jq -S . >"$2"
 }
 evalAt "$work/base" "$work/base.json"

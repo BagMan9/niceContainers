@@ -90,6 +90,12 @@ let
     ]
     ++ defaultRoute;
 
+  # The DNS servers of containers on egress `egress`. The built-in "host"
+  # egress leaves by the host's own routes, so it uses the host's servers.
+  nameserversOf =
+    egress:
+    if egress == "host" then config.networking.nameservers else cfg.egress.${egress}.nameservers or [ ];
+
   # Any free table number: each namespace has its own tables.
   replyTable = "100";
   createVlanInterface =
@@ -144,9 +150,10 @@ let
           )
         );
 
-      resolveText = pkgs.writeText "${n}-resolve" ''
-        nameserver ${c.egressVlan.subnet.gateway.noMask}
-      '';
+      # TODO: Move unbound to be containerized, and be the sole non-isolated container on egress vlans, such that it can function as the dns for everything on that VLAN (would allow future non-shared lookups by interface, etc)
+      resolveText = pkgs.writeText "${n}-resolve" (
+        lib.concatMapStrings (ns: "nameserver ${ns}\n") (nameserversOf c.egress)
+      );
     in
     nameValuePair c.matchSystemd {
       # The namespace outlives restarts of the service; the service never
@@ -241,28 +248,22 @@ let
     }
   ) evalContainers;
 
-  extraSetup = {
-    "rule-config" = {
-      enable = cfg.interfaceConfig.fixTailscale;
-      bindsTo = [ "tailscaled.service" ];
-      after = [
-        "tailscaled.service"
-      ];
-      requiredBy = [ "tailscaled.service" ];
-      serviceConfig = {
-        Type = "oneshot";
-        RemainAfterExit = true;
-        ExecStart = "${pkgs.sysctl}/bin/sysctl -w net.ipv4.conf.tailscale0.rp_filter=0";
-      };
-    };
-  };
 in
 {
   config = lib.mkIf cfg.enable {
     systemd.services = lib.mkMerge [
       containerServices
       netnsServices
-      extraSetup
     ];
+    assertions = lib.mapAttrsToList (n: c: {
+      # An undefined egress is reported by assertions.nix.
+      assertion = c.egressVlan == null || nameserversOf c.egress != [ ];
+      message = "niceContainers.containers.${n}: egress `${c.egress}` has no DNS servers; set ${
+        if c.egress == "host" then
+          "networking.nameservers"
+        else
+          "niceContainers.egress.${c.egress}.nameservers"
+      }.";
+    }) evalContainers;
   };
 }

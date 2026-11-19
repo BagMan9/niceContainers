@@ -1,15 +1,20 @@
-# Everything the niceContainers module at `module` makes of tests/fixture.nix.
+# Everything the niceContainers module at `module` makes of the host in
+# `fixture`.
 # `toplevel` is the whole system's derivation, so two versions of the module
 # with the same `toplevel` give the host the same system; the other attributes
 # only say where a difference is.
-{ nixpkgs, module }:
+{
+  nixpkgs,
+  module,
+  fixture,
+}:
 let
   inherit (nixpkgs) lib;
   inherit
     (lib.nixosSystem {
       modules = [
         module
-        ./fixture.nix
+        fixture
       ];
     })
     config

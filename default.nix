@@ -9,5 +9,6 @@
     ./services.nix
     ./nftables.nix
     ./activation.nix
+    ./assertions.nix
   ];
 }
