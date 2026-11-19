@@ -1,22 +1,15 @@
 {
-  # type: lib :: Lib
   lib,
-  # type: pkgs :: Pkgs
   pkgs,
-  # type: cfg :: import("./default.nix").NiceContainersConfig
   cfg,
-  # type: model :: import("./model.nix").NiceContainersModel
   model,
 }:
 let
   inherit (lib)
     optionals
     flatten
-    # type: string -> a -> {name: string, value: a}
     nameValuePair
-    # type: (string -> a -> {name: string, value: b}) -> {_: a} -> {_: b}
     mapAttrs'
-    # type: (a -> bool) -> [a] -> {right: [a], wrong: [a]}
     partition
     ;
   inherit (model)
@@ -26,7 +19,6 @@ let
     names
     ;
   inherit (builtins)
-    # type: attrValues :: {_: a} -> [a]
     attrValues
     ;
   ip = "${pkgs.iproute2}/bin/ip";
@@ -39,15 +31,12 @@ let
   ipCmds = {
     setUp = dev: "${ip} link set ${dev} up";
     setAddr =
-      # type: addr :: import("./model.nix").Addr
       addr: dev:
       # A new IPv6 address is unusable for about a second while the kernel
       # checks for a duplicate, and the service starts before that: its first
       # connections would fail. Two names never hash to the same address.
       "${ip} addr add ${addr} dev ${dev}${lib.optionalString (addr.family == 6) " nodad"}";
-    setDefaultRoute =
-      # type: gw :: string
-      gw: "${ip} route add default via ${gw}";
+    setDefaultRoute = gw: "${ip} route add default via ${gw}";
 
     createLink =
       {
@@ -66,21 +55,15 @@ let
   createContainerPort =
     with ipCmds;
     {
-      # type: string
       dev,
-      # type: string
       hostDev,
-      # type: string
       nearMac,
-      # type: string
       hostMac,
       addr ? null,
-      # type: string
       gw ? null,
     }:
     let
       defaultRoute = optionals (gw != null && addr != null) [
-        #tix-ignore
         (setAddr addr dev)
         (setDefaultRoute gw)
       ];
@@ -103,16 +86,11 @@ let
   createVlanInterface =
     with ipCmds;
     {
-      # type: string
       dev,
-      # type: string
       name,
-      # type: int
       vid,
-      # type: string
       addr,
       addr6 ? null,
-      # type: string
       gw6 ? null,
     }:
     [

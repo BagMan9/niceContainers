@@ -1,11 +1,7 @@
 {
-  # type: lib :: Lib
   lib,
-  # type: pkgs :: Pkgs
   pkgs,
-  # type: cfg :: import("./default.nix").NiceContainersConfig
   cfg,
-  # type: model :: import("./model.nix").NiceContainersModel
   model,
 }:
 let

@@ -1,119 +1,9 @@
-# The return value of this file, as a tix type, for the consumers that take it
-# as `model`. Hand-maintained. The shapes are factored into the aliases below and
-# stitched together with `import("./model.nix").<Alias>` references. That indirect
-# form (not a bare `Subnet`) is what lets tix carry them cross-file: a consumer's
-# `import("./model.nix").NiceContainersModel` resolves every same-file
-# `import("./model.nix").*` transitively. (It will NOT chase an import to a
-# *different* file, which is why Mount/Container are duplicated here rather than
-# shared with default.nix.)
-#
-# Addr/Subnet come from lib.nix `net.subnet`. Addr coerces to string via
-# __toString (wMask); __toString is listed in the Addr alias so tix's coercion
-# arm fires. String interpolation `${addr}` is already unconstrained in tix.
-/**
-  type Mount = { path: string, group: string, ro: bool };
-*/
-/**
-  type Addr = { family: int, wMask: string, noMask: string, __toString: a -> string, ... };
-*/
-/**
-  type Subnet = {
-     ip: { high: int, low: int } -> import("./model.nix").Addr,
-     fromHash: string -> import("./model.nix").Addr,
-     addr: [int],
-     gateway: import("./model.nix").Addr,
-     __toString: a -> string
-   };
-*/
-/**
-  type Subnet6 = {
-     fromHash: string -> import("./model.nix").Addr,
-     gateway: import("./model.nix").Addr,
-     __toString: a -> string
-   };
-*/
-/**
-  type Container = {
-     enable: bool,
-     groups: [string],
-     egress: string,
-     forwardPorts: [string],
-     hostBinds: [string],
-     matchSystemd: string,
-     syscallFilter: [string],
-     mounts: [Mount],
-   };
-*/
-/**
-  type VlanEntry = {
-     name: string,
-     isolated: bool,
-     vid: int,
-     svi: { wan: string, vrf: string } | {vrf: string} | { } | null,
-     subnet: import("./model.nix").Subnet | import("./model.nix").Subnet6,
-     ...
-   };
-*/
-/**
-  type SviEntry = {
-     name: string,
-     isolated: bool,
-     vid: int,
-     subnet: import("./model.nix").Subnet,
-     svi: { } | { wan: string, vrf: string } | {vrf: string},
-     ...
-  };
-*/
-/**
-  type EvalContainer = {
-     trunkConfig: {
-       free: { dev: string, hostDev: string, nearMac: string, hostMac: string },
-       isolated: { dev: string, hostDev: string, nearMac: string, hostMac: string, addr: import("./model.nix").Addr | null, gw: import("./model.nix").Addr },
-     },
-     egressVlan: VlanEntry | null,
-     groupVlans: { _: { dev: string, vid: int, addr: import("./model.nix").Addr, name: string, ... } },
-     groups: [string],
-     matchSystemd: string,
-     mounts: [Mount],
-     forwardPorts: [string],
-     hostBinds: [string],
-     syscallFilter: [string],
-     egress: string,
-   };
-*/
-/**
-  type NiceContainersModel = {
-     names: {
-       netnsUnit: string -> string,
-       isoBridgeTrunk: string -> string,
-       freeBridgeTrunk: string -> string,
-       containerSub: { name: string, vid: int, ... } -> string,
-       svi: string -> string,
-       vrf: string -> string,
-       vrfToRoutingTable: string -> string,
-       vrfRoutingTable: string -> string,
-     },
-     vrfTables: { _: int },
-     parseGroupRef: string -> { isMaster: bool, name: string, __toString: a -> string, ... },
-     enabledContainers: { _: import("./model.nix").Container },
-     vlans: [VlanEntry],
-     sviList: [SviEntry],
-     sviDict: { _: import("./model.nix").VlanEntry },
-     grpDict: { _: import("./model.nix").VlanEntry },
-     evalContainers: { _: import("./model.nix").EvalContainer },
-     groupAddrMap: string -> { _: { addr: import("./model.nix").Addr, isolated: bool } },
-   };
-*/
-
 {
-  # type: lib :: Lib
   lib,
-  # type: cfg :: import("./default.nix").NiceContainersConfig
   cfg,
 }:
 let
   inherit (lib)
-    # type: nameValuePair :: string -> a -> {name: string, value: a}
     nameValuePair
     imap0
     mapAttrsToList
@@ -194,7 +84,6 @@ let
     else
       configVid;
 
-  # type: egressTable :: string -> int -> int
   egressTable =
     name: auto: if (0 == (cfg.egress.${name}.tableId or 0)) then auto else cfg.egress.${name}.tableId;
 
@@ -291,9 +180,7 @@ let
     // optionalAttrs (d.dualStack or false) { inherit subnet6; }
   ) vlanDefs;
 
-  # type: sviList :: [SviEntry]
   sviList = filter (v: v.svi != null) vlans;
-  # type: grpList :: [VlanEntry]
   grpList = filter (v: v.svi == null) vlans;
   sviDict = listToAttrs (map (v: nameValuePair v.name v) sviList);
   grpDict = listToAttrs (map (v: nameValuePair "${v.name}" v) grpList);
@@ -301,7 +188,6 @@ let
   processContainer =
     name:
     let
-      # type: string
       hash = builtins.hashString "sha256" name;
       mkMac = utils.hashToPostMac hash;
       macs = {
@@ -398,7 +284,6 @@ let
   evalContainers = mapAttrs processContainer enabledContainers;
 
   groupAddrMap =
-    # type: string
     name:
     concatMapAttrs (
       c:

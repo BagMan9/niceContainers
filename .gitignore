@@ -1,5 +1,3 @@
 result
 result-*
 .direnv
-# regen-types.sh scratch output; the real types (types.nix) are committed
-types.generated.tix

@@ -1,5 +1,4 @@
 {
-  # type: lib :: Lib
   lib,
   ...
 }:
@@ -21,7 +20,6 @@ rec {
     let
       hex = strHashToInt hash (offset + 0) 4;
       high = hex / 256;
-      # type: low :: int
       low = builtins.bitAnd hex 255;
     in
     {
@@ -38,7 +36,6 @@ rec {
     hash: offset:
     let
       base = builtins.substring (offset + 0) 10 hash;
-      # type: pairs :: [string]
       pairs = builtins.match "([[:alnum:]]{2})([[:alnum:]]{2})([[:alnum:]]{2})([[:alnum:]]{2})([[:alnum:]]{2})" base;
     in
     lib.strings.concatStringsSep ":" pairs;

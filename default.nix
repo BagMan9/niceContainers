@@ -1,48 +1,11 @@
-# The `niceContainers` options schema, as a tix type. tix does not evaluate the
-# NixOS module system, so it can't derive this from the option declarations
-# below — it's hand-maintained: edit it when you add/remove an option. It must be
-# SELF-CONTAINED (inline nested shapes), because tix's cross-file
-# `import("./default.nix").NiceContainersConfig` extracts this one alias and does
-# NOT carry references to sibling aliases.
-/**
-  type NiceContainersConfig = {
-     enable: bool,
-     hostWan: string,
-     forwardInterfaces: [string],
-     api: { containers: { ... }, ... },
-     interfaceConfig: {
-       baseSubnet: string,
-       ulaPrefix: string,
-       bridgeName: string,
-       isolatedTrunk: string,
-       freeTrunk: string,
-       fixTailscale: bool,
-     },
-     groupConfig: { _: { isolated: bool, cidrMask: int, vid: int, ipv6: bool } },
-     egress: { _: { wanInterface: string, vid: int, tableId: int } },
-     containers: { _: {
-       enable: bool,
-       groups: [string],
-       egress: string,
-       forwardPorts: [string],
-       hostBinds: [string],
-       matchSystemd: string,
-       syscallFilter: [string],
-       mounts: [{ path: string, group: string, ro: bool }],
-     } },
-   };
-*/
 {
   config,
-  # type: lib :: Lib
   lib,
-  # type: pkgs :: Pkgs
   pkgs,
   ...
 }:
 # TODO: Add inline defs, nspawn / vm / multihost semantics
 let
-  # type: cfg :: NiceContainersConfig
   cfg = config.niceContainers;
   model = import ./model.nix { inherit lib cfg; };
   networkd = import ./networkd.nix { inherit lib cfg model; };
@@ -63,12 +26,10 @@ let
       ;
   };
   inherit (lib) mapAttrsToList concatMap concatStringsSep;
-  # type mode :: import("./model.nix").NiceContainersModel
   inherit (model) enabledContainers sviList sviDict;
   inherit (builtins)
     filter
     attrValues
-    # type: string -> string -> [string | null]
     match
     ;
 in
@@ -400,9 +361,7 @@ in
                   idxParse = builtins.elemAt (match "([[:digit:]]+):([[:digit:]]+)(/tcp|/udp)?" def);
                 in
                 {
-                  # type: string
                   egressSide = idxParse 0;
-                  # type: string
                   containerSide = idxParse 1;
                   proto =
                     let
@@ -418,7 +377,6 @@ in
                 in
                 {
                   ifname = if svi != null then svi.wan or cfg.hostWan else cfg.hostWan;
-                  # type: string
                   ip = container.trunkConfig.isolated.addr.noMask;
                 };
               entryToString =
