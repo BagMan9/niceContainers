@@ -289,7 +289,14 @@ in
       "net.ipv4.conf.all.forwarding" = 1;
       "net.ipv4.conf.default.forwarding" = 1;
       "net.ipv6.conf.all.forwarding" = 1;
-    };
+    }
+    # A packet forwarded into the host-binds VRF has its source address
+    # looked up in that VRF's table, which holds no route back to it. With
+    # reverse-path filtering on the interface it arrived on, in either mode,
+    # the kernel drops it. systemd's stock sysctl.d turns the filter on for
+    # every interface, and again each time systemd-sysctl restarts, so the
+    # exception has to live in sysctl.d as well.
+    // lib.genAttrs (map (i: "net.ipv4.conf.${i}.rp_filter") cfg.forwardInterfaces) (_: 0);
     systemd.network = with networkd; {
 
       enable = true;
