@@ -10,4 +10,7 @@ Cons:
 - You end up writing 2-3 separate config blocks for one service.
 
 TODO:
-- Fix the con. Can't put config under `systemd.services.<name>.*` due to evaluation issues with mounts right now.
+- [ ] Fix the con. Can't put config under `systemd.services.<name>.*` due to evaluation issues with mounts right now.
+
+
+Human written then large refactor + ipv6 & QoL dditions with Claude.
