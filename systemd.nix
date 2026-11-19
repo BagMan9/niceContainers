@@ -23,12 +23,19 @@ let
     evalContainers
     groupAddrMap
     parseGroupRef
+    names
     ;
   inherit (builtins)
     # type: attrValues :: {_: a} -> [a]
     attrValues
     ;
   ip = "${pkgs.iproute2}/bin/ip";
+
+  # The priority of every single-valued setting the wrapper makes: above a
+  # service module's plain definition, below mkForce. At plain priority a
+  # module's own `User =` or `PrivateDevices =` would conflict with the
+  # wrapper's; at mkForce a unit could not opt out of one with mkForce.
+  wrap = lib.mkOverride 90;
   ipCmds = {
     setUp = dev: "${ip} link set ${dev} up";
     setAddr =
@@ -47,6 +54,10 @@ let
         ...
       }:
       "${ip} link add ${dev} address ${nearMac} type veth peer name ${hostDev} address ${hostMac} netns /proc/1/ns/net";
+
+    # The commands above act on the namespace they run in; this runs one
+    # inside a container's.
+    inNetns = netns: cmd: "${ip} netns exec ${netns} ${cmd}";
   };
   createContainerPort =
     with ipCmds;
@@ -109,15 +120,7 @@ in
       p = partition (m: !m.ro) c.mounts;
       rw_mounts = p.right;
       ro_mounts = p.wrong;
-      guardSetup =
-        with c.trunkConfig;
-        map (s: "-${pkgs.toybox}/bin/nsenter --net=/proc/1/ns/net ${ip} link del ${s}") [
-          isolated.hostDev
-          free.hostDev
-        ];
-      isoSetup = createContainerPort c.trunkConfig.isolated;
-      freeSetup = createContainerPort c.trunkConfig.free;
-      groupSetup = map createVlanInterface <| attrValues c.groupVlans;
+      netnsUnit = "${names.netnsUnit n}.service";
       hostsText =
         let
           pairToText = n: { addr, ... }: "${addr.noMask} ${n}";
@@ -142,87 +145,103 @@ in
       resolveText = pkgs.writeText "${n}-resolve" ''
         nameserver ${c.egressVlan.subnet.gateway.noMask}
       '';
+    in
+    nameValuePair c.matchSystemd {
+      # The namespace outlives restarts of the service; the service never
+      # outlives the namespace.
+      bindsTo = [ netnsUnit ];
+      after = [ netnsUnit ];
+      serviceConfig = {
+        NetworkNamespacePath = wrap "/run/netns/${n}";
+        # Has no effect while NetworkNamespacePath is set. If that is ever
+        # overridden away, the unit lands in an empty namespace, not the host's.
+        PrivateNetwork = wrap true;
+
+        # Lists add to whatever the unit already has.
+        SupplementaryGroups = map (r: r.group) c.mounts;
+        BindPaths = map (r: r.path) rw_mounts;
+        BindReadOnlyPaths =
+          (map (r: r.path) ro_mounts)
+          ++ lib.singleton "${hostsText}:/etc/hosts"
+          ++ lib.optional (c.egressVlan != null) "${resolveText}:/etc/resolv.conf";
+        InaccessiblePaths = "/run/nscd";
+        SystemCallFilter = c.syscallFilter;
+
+        DynamicUser = wrap true;
+        User = wrap null;
+        Group = wrap null;
+
+        NoNewPrivileges = wrap true;
+        # difference between this and "yes?"
+        ProtectHome = wrap true;
+        ProtectClock = wrap true;
+        PrivateTmp = wrap "disconnected"; # Stricter version enabled by DynamicUser
+        PrivateDevices = wrap true;
+        PrivateUsers = wrap true;
+        ProtectKernelLogs = wrap true;
+        ProtectKernelTunables = wrap true;
+        ProtectKernelModules = wrap true;
+        ProtectControlGroups = wrap true;
+        RestrictSUIDSGID = wrap true;
+        RemoveIPC = wrap true;
+        ProtectHostname = wrap true;
+        # Weak process isolation
+
+        ProtectProc = wrap "invisible";
+        # Strong process isolation (pid 1)
+        # Currently broken w/ DynamicUser, see systemd#41014
+        # PrivatePIDs = true;
+
+        # A service module that needs namespaces says so; let it win.
+        RestrictNamespaces = lib.mkDefault true;
+        RestrictRealtime = wrap true;
+        LockPersonality = wrap true;
+      };
+    }
+
+  ) evalContainers;
+
+  # One per container: creates /run/netns/<name> and wires it to the bridge.
+  netnsServices = mapAttrs' (
+    n: c:
+    let
+      # Leftovers of a start that died half-way. The kernel tears a deleted
+      # namespace down in the background, so its veth host ends can still be
+      # there and would make the `link add` below fail.
+      guardSetup = [
+        "-${ip} netns del ${n}"
+      ]
+      ++ (
+        with c.trunkConfig;
+        map (s: "-${ip} link del ${s}") [
+          isolated.hostDev
+          free.hostDev
+        ]
+      );
+      isoSetup = createContainerPort c.trunkConfig.isolated;
+      freeSetup = createContainerPort c.trunkConfig.free;
+      groupSetup = map createVlanInterface <| attrValues c.groupVlans;
 
       fullSetup = flatten [
-        guardSetup
+        # `ip netns add` leaves lo down, and the generated /etc/hosts points
+        # localhost at it.
+        (ipCmds.setUp "lo")
         isoSetup
         freeSetup
         groupSetup
       ];
-
-      extraService = c.extraServiceConfig.serviceConfig or { };
-
-      extraPaths =
-        let
-          confguard = extraService.BindReadOnlyPaths or [ ];
-        in
-        if (builtins.isList confguard) then confguard else lib.singleton confguard;
-
-      extraSetup =
-        let
-          confGuard = extraService.ExecStartPre or [ ];
-        in
-        if (builtins.isList confGuard) then confGuard else lib.singleton confGuard;
     in
-    nameValuePair c.matchSystemd
-    <| lib.mkMerge [
-      {
-        serviceConfig = {
-          PrivateNetwork = lib.mkForce true;
-          ExecStartPre = map (s: "+${s}") <| fullSetup ++ extraSetup;
-
-          SupplementaryGroups = map (r: r.group) c.mounts;
-          BindPaths = map (r: r.path) rw_mounts;
-          BindReadOnlyPaths =
-            (map (r: r.path) ro_mounts)
-            ++ lib.singleton "${hostsText}:/etc/hosts"
-            ++ lib.optional (c.egressVlan != null) "${resolveText}:/etc/resolv.conf"
-            ++ extraPaths;
-
-          DynamicUser = true;
-          User = lib.mkForce null;
-          Group = lib.mkForce null;
-
-          NoNewPrivileges = true;
-          # difference between this and "yes?"
-          ProtectHome = lib.mkForce true;
-          ProtectClock = true;
-          InaccessiblePaths = "/run/nscd";
-          PrivateTmp = lib.mkForce "disconnected"; # Stricter version enabled by DynamicUser
-          PrivateDevices = lib.mkForce true; # WARN: TEMP, MOVE TO SOMETHING THAT OVERRIDES BARE DEFS BUT IS STILL EASILY FORCEABLE
-          PrivateUsers = true;
-          ProtectKernelLogs = true;
-          ProtectKernelTunables = true;
-          ProtectKernelModules = true;
-          ProtectControlGroups = true;
-          RestrictSUIDSGID = true;
-          RemoveIPC = true;
-          ProtectHostname = true;
-          # Weak process isolation
-
-          ProtectProc = lib.mkForce "invisible";
-          # Strong process isolation (pid 1)
-          # Currently broken w/ DynamicUser, see systemd#41014
-          # PrivatePIDs = true;
-
-          RestrictNamespaces = lib.mkDefault true;
-          RestrictRealtime = true;
-          LockPersonality = true;
-          SystemCallFilter = lib.mkOverride 100 [
-            "@system-service"
-            "~@mount" # Needed to totally prevent any changing of mounts
-            "~@privileged"
-          ];
-        }
-        // (removeAttrs extraService [
-          "ExecStartPre"
-          "BindReadOnlyPaths"
-        ]);
-      }
-      (removeAttrs c.extraServiceConfig [ "serviceConfig" ])
-    ]
-
+    nameValuePair (names.netnsUnit n) {
+      description = "niceContainers network namespace for ${n}";
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+        ExecStart = guardSetup ++ [ "${ip} netns add ${n}" ] ++ map (ipCmds.inNetns n) fullSetup;
+        ExecStop = "${ip} netns del ${n}";
+      };
+    }
   ) evalContainers;
+
   extraSetup = {
     "rule-config" = {
       enable = cfg.interfaceConfig.fixTailscale;

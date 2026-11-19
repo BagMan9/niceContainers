@@ -32,7 +32,7 @@
      forwardPorts: [string],
      hostBinds: [string],
      matchSystemd: string,
-     extraServiceConfig: { ... },
+     syscallFilter: [string],
      mounts: [Mount],
    };
 */
@@ -67,13 +67,14 @@
      mounts: [Mount],
      forwardPorts: [string],
      hostBinds: [string],
-     extraServiceConfig: { ... },
+     syscallFilter: [string],
      egress: string,
    };
 */
 /**
   type NiceContainersModel = {
      names: {
+       netnsUnit: string -> string,
        isoBridgeTrunk: string -> string,
        freeBridgeTrunk: string -> string,
        containerSub: { name: string, vid: int, ... } -> string,
@@ -125,6 +126,8 @@ let
     |> lib.lists.uniqueStrings;
 
   names = {
+    netnsUnit = containerName: "nice-netns-${containerName}";
+
     isoBridgeTrunk =
       containerName:
       let
@@ -360,7 +363,7 @@ let
         mounts
         forwardPorts
         hostBinds
-        extraServiceConfig
+        syscallFilter
         egress
         ;
     };

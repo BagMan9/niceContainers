@@ -26,7 +26,7 @@
        forwardPorts: [string],
        hostBinds: [string],
        matchSystemd: string,
-       extraServiceConfig: { ... },
+       syscallFilter: [string],
        mounts: [{ path: string, group: string, ro: bool }],
      } },
    };
@@ -177,41 +177,56 @@ in
 
         containers = mkOption {
           type = types.attrsOf (
-            types.submodule {
-              options = {
-                enable = mkOption {
-                  type = types.bool;
-                  default = true;
+            types.submodule (
+              { name, ... }:
+              {
+                options = {
+                  enable = mkOption {
+                    type = types.bool;
+                    default = true;
+                  };
+                  groups = mkOption {
+                    type = types.listOf types.singleLineStr;
+                    default = [ ];
+                  };
+                  egress = mkOption {
+                    type = types.singleLineStr;
+                    default = "";
+                  };
+                  forwardPorts = mkOption {
+                    type = types.listOf portSpec;
+                    default = [ ];
+                  };
+                  hostBinds = mkOption {
+                    type = types.listOf portSpec;
+                    default = [ ];
+                  };
+                  matchSystemd = mkOption {
+                    type = types.singleLineStr;
+                    default = name;
+                    description = "The systemd service to run as this container.";
+                  };
+                  syscallFilter = mkOption {
+                    type = types.listOf types.singleLineStr;
+                    default = [
+                      "@system-service"
+                      "~@mount" # Needed to totally prevent any changing of mounts
+                      "~@privileged"
+                    ];
+                    description = ''
+                      The wrapper's SystemCallFilter entries, added to the
+                      service module's own. An option because the two are one
+                      list at one priority: mkForce on the unit clears both, and
+                      only this drops the wrapper's share alone.
+                    '';
+                  };
+                  mounts = mkOption {
+                    type = types.listOf (types.submodule resourceConf);
+                    default = [ ];
+                  };
                 };
-                groups = mkOption {
-                  type = types.listOf types.singleLineStr;
-                  default = [ ];
-                };
-                egress = mkOption {
-                  type = types.singleLineStr;
-                  default = "";
-                };
-                forwardPorts = mkOption {
-                  type = types.listOf portSpec;
-                  default = [ ];
-                };
-                hostBinds = mkOption {
-                  type = types.listOf portSpec;
-                  default = [ ];
-                };
-                matchSystemd = mkOption {
-                  type = types.singleLineStr;
-                };
-                extraServiceConfig = mkOption {
-                  type = types.anything;
-                  default = { };
-                };
-                mounts = mkOption {
-                  type = types.listOf (types.submodule resourceConf);
-                  default = [ ];
-                };
-              };
-            }
+              }
+            )
           );
           default = { };
         };
@@ -313,6 +328,7 @@ in
     };
     systemd.services = lib.mkMerge [
       systemd.containerServices
+      systemd.netnsServices
       systemd.extraSetup
     ];
 

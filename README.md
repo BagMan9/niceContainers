@@ -16,9 +16,27 @@ imports = [ inputs.niceContainers.nixosModules.default ];
 niceContainers = {
   enable = true;
   hostWan = "enp42s0";
-  # egress, groupConfig, containers, ...
+  # egress, groupConfig, ...
+  containers.sabnzbd = {
+    egress = "nyc";
+    groups = [ "download" ];
+  };
 };
+
+# A container wraps the systemd service of the same name (`matchSystemd`
+# picks another). Its single-valued settings sit between a service module's
+# and mkForce, so opting out of one is an ordinary override on the unit:
+systemd.services.sabnzbd.serviceConfig.PrivateDevices = lib.mkForce false;
 ```
+
+## What a container is at run time
+
+Two units. `nice-netns-<name>.service` creates the network namespace
+`/run/netns/<name>`, its veth pairs to the bridge and its VLAN interfaces. The
+wrapped service joins that namespace (`NetworkNamespacePath=`) and is bound to
+the unit, so the namespace survives a restart of the service and the service
+stops if the namespace goes away. `ip netns exec <name> ip -br addr` looks
+inside one.
 
 ## Layout
 
