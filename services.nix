@@ -52,8 +52,6 @@ let
       }:
       "${ip} link add ${dev} address ${nearMac} type veth peer name ${hostDev} address ${hostMac} netns /proc/1/ns/net";
 
-    # The commands above act on the namespace they run in; this runs one
-    # inside a container's.
     inNetns = netns: cmd: "${ip} netns exec ${netns} ${cmd}";
   };
   inherit (ipCmds)
@@ -112,9 +110,7 @@ let
       (setAddr addr name)
       (setUp name)
     ]
-    # A leg with a second, IPv6 address takes connections the host forwards
-    # in over IPv6. Only packets sent from that address get a route back out
-    # through it. A plain default route would make every program in the
+    # A plain default route would make every program in the
     # namespace see IPv6 as reachable and try it first, and the host forwards
     # none of it.
     ++ optionals (addr6 != null) [

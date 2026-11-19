@@ -8,13 +8,19 @@ let
     options = {
       path = mkOption {
         type = types.singleLineStr;
+        description = "A host path, bound into the container at the same path.";
       };
       group = mkOption {
         type = types.singleLineStr;
+        description = ''
+          A group the container runs with as a supplementary group, to give
+          it access to `path`. Created on the host if missing.
+        '';
       };
       ro = mkOption {
         type = types.bool;
         default = false;
+        description = "Bind `path` read-only.";
       };
     };
   };
@@ -23,6 +29,10 @@ let
       isolated = mkOption {
         type = types.bool;
         default = false;
+        description = ''
+          Members reach only the group's masters (`master@<group>` in
+          `containers.<name>.groups`), not each other.
+        '';
       };
       subnet = mkOption {
         type = types.nullOr cidr4;
@@ -36,7 +46,8 @@ let
       };
       vid = mkOption {
         type = types.ints.between 0 4095;
-        default = 0; # 0 Indicates hash / automatic
+        default = 0;
+        description = "The group's VLAN ID; 0 derives one (1-1024) from its name.";
       };
       ipv6 = mkOption {
         type = types.bool;
@@ -53,7 +64,13 @@ let
 
   egressConf = {
     options = {
-      wanInterface = mkOption { type = types.singleLineStr; };
+      wanInterface = mkOption {
+        type = types.singleLineStr;
+        description = ''
+          The interface this egress leaves through, such as a VPN tunnel.
+          It is moved into the egress's VRF.
+        '';
+      };
       nameservers = mkOption {
         type = types.listOf types.singleLineStr;
         default = [ ];
@@ -74,11 +91,16 @@ let
       };
       vid = mkOption {
         type = types.ints.between 0 4095;
-        default = 0; # 0 Indicates hash / automatic
+        default = 0;
+        description = "The egress's VLAN ID; 0 derives one (1-1024) from its name.";
       };
       tableId = mkOption {
         type = types.ints.u16;
         default = 0;
+        description = ''
+          The routing table of the egress's VRF; 0 picks 110 plus the VRF's
+          position among all VRFs in name order.
+        '';
       };
     };
   };
@@ -91,15 +113,30 @@ in
     api = {
       containers = mkOption {
         type = types.anything;
+        readOnly = true;
+        description = ''
+          The evaluated containers, for other config to read: each one's
+          interfaces, egress VLAN, group legs and addresses.
+        '';
       };
     };
-    enable = mkEnableOption "Nice Containers";
+    enable = mkEnableOption "isolated container networking (niceContainers)";
     hostWan = mkOption {
       type = types.singleLineStr;
+      description = ''
+        The host's uplink. Traffic from containers on the built-in `host`
+        egress is masqueraded out of it, and their `forwardPorts` arrive on
+        it.
+      '';
     };
     forwardInterfaces = mkOption {
       type = types.listOf types.singleLineStr;
       default = [ ];
+      description = ''
+        Host interfaces whose connections to a `hostBinds` port are
+        forwarded into the container. Reverse-path filtering is turned off
+        on them.
+      '';
     };
     interfaceConfig = {
       baseSubnet = mkOption {
@@ -132,26 +169,49 @@ in
       bridgeName = mkOption {
         type = types.singleLineStr;
         default = "br-containers";
+        description = "The bridge joining the host's VLAN interfaces and every container's trunks.";
       };
       isolatedTrunk = mkOption {
         type = types.singleLineStr;
         default = "eth-iso";
+        description = ''
+          The name, inside each container, of its interface for its egress
+          VLAN (untagged) and its isolated groups (tagged). Its bridge port
+          is isolated, so it reaches no other isolated port.
+        '';
       };
       freeTrunk = mkOption {
         type = types.singleLineStr;
         default = "eth-free";
+        description = ''
+          The name, inside each container, of its interface for its other
+          groups and the groups it is master of.
+        '';
       };
     };
     groupConfig = mkOption {
       type = types.attrsOf (types.submodule groupConf);
       default = { };
+      description = ''
+        Settings for groups named in `containers.<name>.groups`. A group
+        needs no entry here to exist.
+      '';
     };
     egress = mkOption {
       type = types.attrsOf (types.submodule egressConf);
       default = { };
+      description = ''
+        Ways out for containers. Each is a VRF whose default route leaves
+        through `wanInterface`, masqueraded. The names `host` (the host's
+        own routing table, out of `hostWan`) and `host-binds` are built in.
+      '';
     };
 
     containers = mkOption {
+      description = ''
+        Containers. Each runs a systemd service (by default the one of the
+        same name) in its own network namespace and sandbox.
+      '';
       type = types.attrsOf (
         types.submodule (
           { name, ... }:
@@ -160,22 +220,45 @@ in
               enable = mkOption {
                 type = types.bool;
                 default = true;
+                description = "Whether to set up this container.";
               };
               groups = mkOption {
                 type = types.listOf types.singleLineStr;
                 default = [ ];
+                description = ''
+                  Groups this container joins. Members reach each other by
+                  container name (written to its /etc/hosts).
+                  `master@<group>` joins as a master, which every member
+                  reaches even in an isolated group.
+                '';
               };
               egress = mkOption {
                 type = types.singleLineStr;
                 default = "";
+                description = ''
+                  The egress this container's traffic leaves by: a name from
+                  `niceContainers.egress`, or `host`. Empty for none: the
+                  container then reaches only its groups.
+                '';
               };
               forwardPorts = mkOption {
                 type = types.listOf portSpec;
                 default = [ ];
+                description = ''
+                  Ports forwarded from the egress's WAN interface into the
+                  container, as `<egress port>:<container port>[/tcp|/udp]`
+                  (tcp when left out).
+                '';
               };
               hostBinds = mkOption {
                 type = types.listOf portSpec;
                 default = [ ];
+                description = ''
+                  Ports forwarded from the host's `forwardInterfaces` into
+                  the container, over IPv4 and IPv6, as
+                  `<host port>:<container port>[/tcp|/udp]` (tcp when left
+                  out).
+                '';
               };
               matchSystemd = mkOption {
                 type = types.singleLineStr;
@@ -199,6 +282,7 @@ in
               mounts = mkOption {
                 type = types.listOf (types.submodule resourceConf);
                 default = [ ];
+                description = "Host paths bound into the container.";
               };
             };
           }
