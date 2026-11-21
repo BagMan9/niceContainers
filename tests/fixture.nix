@@ -19,6 +19,7 @@
       "enp1s0"
       "tailscale0"
     ];
+    interfaceConfig.fixTailscale = true;
     egress = {
       nyc = {
         wanInterface = "wg-nyc";

@@ -156,24 +156,35 @@ in
         (lib.optionalAttrs (cfg.forwardInterfaces != [ ]) {
           "10-generic" = {
             matchConfig.Name = "lo";
-            routingPolicyRules = [
-              {
+            routingPolicyRules =
+              # Ahead of the main-table rule below: main's default route
+              # would otherwise take every reply to a Tailscale peer. Table
+              # 52 holds only Tailscale's routes, so other replies fall
+              # through to main.
+              lib.optional cfg.interfaceConfig.fixTailscale {
                 FirewallMark = 1;
-                Priority = 11;
-                Table = "main";
-                # A rule with no address is IPv4 only unless told otherwise.
+                Priority = 10;
+                Table = 52;
                 Family = "both";
               }
-              {
-                Priority = 12;
-                L3MasterDevice = true;
-              }
-            ]
-            ++ lib.imap (i: s: {
-              To = toString s.subnet;
-              Priority = 50 + i;
-              Table = model.vrfTables.${names.vrfRoutingTable s.name};
-            }) egressVlans;
+              ++ [
+                {
+                  FirewallMark = 1;
+                  Priority = 11;
+                  Table = "main";
+                  # A rule with no address is IPv4 only unless told otherwise.
+                  Family = "both";
+                }
+                {
+                  Priority = 12;
+                  L3MasterDevice = true;
+                }
+              ]
+              ++ lib.imap (i: s: {
+                To = toString s.subnet;
+                Priority = 50 + i;
+                Table = model.vrfTables.${names.vrfRoutingTable s.name};
+              }) egressVlans;
           };
         })
       ];

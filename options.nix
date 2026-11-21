@@ -188,6 +188,18 @@ in
           groups and the groups it is master of.
         '';
       };
+      fixTailscale = mkOption {
+        type = types.bool;
+        default = false;
+        description = ''
+          Route replies to `hostBinds` connections through Tailscale's
+          routing table (52) before the host's main table. Needed when
+          `tailscale0` is one of `forwardInterfaces`: Tailscale keeps the
+          routes to its peers out of the main table, so without this the
+          replies to a peer leave by the host's default route and the
+          connection never opens.
+        '';
+      };
     };
     groupConfig = mkOption {
       type = types.attrsOf (types.submodule groupConf);
